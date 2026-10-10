@@ -402,6 +402,9 @@ const ENEMY_REACTION = 0.35;   // seconds an enemy must see the player before it
 const ENEMY_SHOT_SPEED = 220;  // pixels per second
 const ENEMY_SHOT_RADIUS = 4;   // pixels
 const BURST_TIME = 0.3;        // seconds the ring left by a dead enemy lasts
+const ENEMY_TURN_SPEED = 8;    // how fast an enemy's body turns, in radians per second
+const ENEMY_STRIDE = 26;       // pixels an enemy covers in one full swing of both feet
+const ENEMY_SWING = 4;         // how far an enemy's foot swings forward and back, in pixels
 
 const BOSS_EVERY = 5;             // every this many rooms, the room is a boss room
 const BOSS_SIZE = 66;             // boss square, in pixels: three times a normal enemy
@@ -464,7 +467,9 @@ const COLORS = {
   blast: '#ffa94d',         // Explosive Rounds explosions
   slowTint: 'rgba(79, 209, 255, 0.08)', // laid over the room while Time Slow is running
   enemy: '#ff4d5e',
-  enemyCore: '#7a1a26',     // dark middle of an enemy
+  enemyCore: '#7a1a26',     // an enemy's dark helmet
+  enemyDark: '#c23146',     // an enemy's feet and arm
+  enemyGun: '#9aa0b5',      // the barrel of an enemy's gun
   enemyShot: '#ffe14d',
   boss: '#e03131',          // the boss's body, and its health bar
   bossRage: '#ff922b',      // the same, once it is below half health
@@ -616,9 +621,11 @@ const slide = { left: 0, dx: 0, dy: 0 };
 let slideReadyAt = 0;    // game time when the next slide is allowed
 
 let room = 1;            // which room this is, counting from 1. More rooms means more enemies.
-// Enemies alive in this room: { x, y, dx, dy, turnAt, fireAt }. x and y are the
-// top-left corner, (dx, dy) is the direction it wanders in, and turnAt and fireAt
-// are the game times of its next change of direction and its next shot.
+// Enemies alive in this room: { x, y, dx, dy, turnAt, fireAt, angle, walk }. x and y
+// are the top-left corner, (dx, dy) is the direction it wanders in, and turnAt and
+// fireAt are the game times of its next change of direction and its next shot.
+// "angle" is the way its body faces, in radians, and "walk" is how far it has
+// walked, which drives its feet. Those two only change how it is drawn.
 const enemies = [];
 // Enemy shots still flying: { x, y, dx, dy, left }. "left" is the distance to the wall ahead.
 const enemyShots = [];
@@ -969,8 +976,18 @@ function spawnEnemies(reach) {
       turnAt: time + 1 + Math.random() * 2,
       // Spread the first shots out so the enemies do not all fire at once.
       fireAt: time + ENEMY_GRACE + Math.random() * ENEMY_FIRE_EVERY,
+      angle: Math.atan2(dir.dy, dir.dx),
+      walk: 0,
     });
   }
+}
+
+// Turn an angle toward a target angle by at most "most" radians, the short way round.
+function turnToward(angle, target, most) {
+  let diff = (target - angle) % (Math.PI * 2);
+  if (diff > Math.PI) diff -= Math.PI * 2;
+  if (diff < -Math.PI) diff += Math.PI * 2;
+  return angle + Math.max(-most, Math.min(most, diff));
 }
 
 function updateEnemies(dt) {
@@ -985,27 +1002,38 @@ function updateEnemies(dt) {
       enemy.dy = dir.dy;
       enemy.turnAt = time + 1 + Math.random() * 2;
     }
+    const startX = enemy.x;
+    const startY = enemy.y;
     if (moveBox(enemy, ENEMY_SIZE, 'x', enemy.dx * ENEMY_SPEED * dt)) enemy.dx = -enemy.dx;
     if (moveBox(enemy, ENEMY_SIZE, 'y', enemy.dy * ENEMY_SPEED * dt)) enemy.dy = -enemy.dy;
+    enemy.walk += Math.hypot(enemy.x - startX, enemy.y - startY);
+
+    // It looks the way it is walking, unless it can see the player.
+    let look = Math.atan2(enemy.dy, enemy.dx);
 
     // Shoot: only with a clear straight line from the enemy's middle to the player's middle.
     const ex = enemy.x + ENEMY_SIZE / 2;
     const ey = enemy.y + ENEMY_SIZE / 2;
     const distance = Math.hypot(px - ex, py - ey);
-    if (distance < 1) continue; // right on top of the player, so there is no direction to aim in
-    const dx = (px - ex) / distance;
-    const dy = (py - ey) / distance;
-    const ray = castRay(ex, ey, dx, dy);
+    if (distance >= 1) { // right on top of the player there is no direction to aim in
+      const dx = (px - ex) / distance;
+      const dy = (py - ey) / distance;
+      const ray = castRay(ex, ey, dx, dy);
 
-    if (ray.dist < distance) {
-      // A wall is in the way. Once the player comes into view, the enemy still
-      // needs a moment to react, so stepping out of cover is not punished instantly.
-      enemy.fireAt = Math.max(enemy.fireAt, time + ENEMY_REACTION);
-    } else if (time >= enemy.fireAt) {
-      // The shot keeps going past the player until the wall the ray found.
-      enemyShots.push({ x: ex, y: ey, dx, dy, left: ray.dist });
-      enemy.fireAt = time + ENEMY_FIRE_EVERY;
+      if (ray.dist < distance) {
+        // A wall is in the way. Once the player comes into view, the enemy still
+        // needs a moment to react, so stepping out of cover is not punished instantly.
+        enemy.fireAt = Math.max(enemy.fireAt, time + ENEMY_REACTION);
+      } else {
+        look = Math.atan2(dy, dx); // it turns to face the player it can see
+        if (time >= enemy.fireAt) {
+          // The shot keeps going past the player until the wall the ray found.
+          enemyShots.push({ x: ex, y: ey, dx, dy, left: ray.dist });
+          enemy.fireAt = time + ENEMY_FIRE_EVERY;
+        }
+      }
     }
+    enemy.angle = turnToward(enemy.angle, look, ENEMY_TURN_SPEED * dt);
   }
 }
 
@@ -2542,19 +2570,70 @@ function drawExit() {
   ctx.stroke();
 }
 
-// An enemy is a glowing red square with a dark middle.
+// An enemy is an armored trooper seen from above: two feet, glowing red armor
+// with a spike on each shoulder, a dark helmet with one yellow eye, and a gun.
+// Like the player it is drawn around the middle of its square, with forward
+// along +x, and it is only a picture: beams still meet the square.
 function drawEnemies() {
-  const coreInset = 7;
   for (const enemy of enemies) {
-    const x = Math.round(enemy.x);
-    const y = Math.round(enemy.y);
+    const swing = Math.sin(enemy.walk / ENEMY_STRIDE * Math.PI * 2) * ENEMY_SWING;
+
+    ctx.save();
+    ctx.translate(Math.round(enemy.x) + ENEMY_SIZE / 2, Math.round(enemy.y) + ENEMY_SIZE / 2);
+    ctx.rotate(enemy.angle);
+
+    // Feet, swinging opposite ways as it walks.
+    ctx.fillStyle = COLORS.enemyDark;
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.ellipse(1 - side * swing, side * 5, 3.5, 2.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // The gun, a dark barrel with a hot tip, and the arm that holds it.
+    ctx.fillStyle = COLORS.enemyGun;
+    ctx.fillRect(5, -1.5, 4, 3);
+    ctx.fillStyle = COLORS.enemyShot;
+    ctx.fillRect(9, -1.5, 2, 3);
+    ctx.strokeStyle = COLORS.enemyDark;
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(2, 8.5);
+    ctx.lineTo(7.5, 2);
+    ctx.stroke();
+
+    // Armor: flat at the front, a spike on each shoulder, and a notch at the back.
     ctx.fillStyle = COLORS.enemy;
     ctx.shadowColor = COLORS.enemy;
     ctx.shadowBlur = 10;
-    ctx.fillRect(x, y, ENEMY_SIZE, ENEMY_SIZE);
+    ctx.beginPath();
+    ctx.moveTo(6, -4.5);
+    ctx.lineTo(3.5, -9);
+    ctx.lineTo(-3.5, -11);
+    ctx.lineTo(-7.5, -6);
+    ctx.lineTo(-4.5, 0);
+    ctx.lineTo(-7.5, 6);
+    ctx.lineTo(-3.5, 11);
+    ctx.lineTo(3.5, 9);
+    ctx.lineTo(6, 4.5);
+    ctx.closePath();
+    ctx.fill();
     ctx.shadowBlur = 0;
+
+    // Helmet and eye.
     ctx.fillStyle = COLORS.enemyCore;
-    ctx.fillRect(x + coreInset, y + coreInset, ENEMY_SIZE - 2 * coreInset, ENEMY_SIZE - 2 * coreInset);
+    ctx.beginPath();
+    ctx.arc(0, 0, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = COLORS.enemyShot;
+    ctx.shadowColor = COLORS.enemyShot;
+    ctx.shadowBlur = 6;
+    ctx.beginPath();
+    ctx.arc(2.5, 0, 1.6, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore(); // puts back the turn, the glow, and the line style
   }
 }
 
