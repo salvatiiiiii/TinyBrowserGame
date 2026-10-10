@@ -383,6 +383,10 @@ const SENSITIVITY_KEYS = {
   Equal: 1,  NumpadAdd: 1,
 };
 
+const WALK_STRIDE = 64;         // pixels the player covers in one full swing of both feet
+const WALK_SWING = 6;           // how far a foot swings forward and back, in pixels
+const PORTAL_GUN_SHOW = 0.45;   // seconds the figure holds the portal gun after firing a portal
+
 const PORTAL_SHOT_SPEED = 900; // pixels per second for a portal gun shot
 const TELEPORT_DELAY = 0.5;    // seconds after a teleport before the next one can happen
 
@@ -438,6 +442,10 @@ const HEALTH_PACK_MIN_DIST = 4;   // fewest tile steps between the player and a 
 const COLORS = {
   player: '#4fd1ff',
   playerHit: '#ffd0d4',     // the player while it flashes after being hit
+  playerDark: '#2389b5',    // the player's feet
+  playerArm: '#35b4e6',     // the player's arm, a shade darker than its shoulders
+  playerHead: '#d6f4ff',    // the player's head and hand
+  portalGun: '#dfe3ee',     // the body of the portal gun in the player's hand
   wall: '#4a4f63',
   exitLocked: '#ff4d5e',    // the exit portal while enemies are still alive
   exitLockedDark: '#3d1219',
@@ -594,6 +602,14 @@ const portalTurn = { a: 0, b: 0 };
 const portalShots = [];
 let teleportReadyAt = 0; // game time when teleporting is allowed again
 let lastExit = null;     // 'a' or 'b': the gun portal the player last came out of
+// The portal gun the figure is holding up: which portal it just fired, and the
+// game time until which it shows. After that the blaster is back in its hand.
+const portalGunShown = { which: 'a', until: 0 };
+
+// The walk animation. "walking" is true while the player actually moved this
+// frame, and walkDistance is how far it has walked since it last stood still.
+let walking = false;
+let walkDistance = 0;
 
 // The slide in progress: seconds left, and the direction it was started in.
 const slide = { left: 0, dx: 0, dy: 0 };
@@ -1567,6 +1583,9 @@ function restartGame() {
   slideReadyAt = 0;
   teleportReadyAt = 0;
   lastBlasterShot = -Infinity;
+  portalGunShown.until = 0;
+  walking = false;
+  walkDistance = 0;
 
   generateRoom();
 }
@@ -1870,7 +1889,10 @@ function nextPortalFor(side) {
 
 function firePortalFromKey(side) {
   if (middleInWall()) return; // passing through a wall on a Phase Slide
-  firePortalGun(nextPortalFor(side));
+  const which = nextPortalFor(side);
+  firePortalGun(which);
+  portalGunShown.which = which;
+  portalGunShown.until = time + PORTAL_GUN_SHOW;
   if (hasLegendary('portals')) portalTurn[side] = 1 - portalTurn[side];
 }
 
@@ -2102,6 +2124,8 @@ function update(dt) {
   // of the frame is ordinary walking, so a slide covers the same distance at any frame rate.
   let { dx, dy } = inputDirection();
   let walkTime = dt;
+  const startX = player.x;
+  const startY = player.y;
   if (slide.left > 0) {
     const slideTime = Math.min(dt, slide.left);
     if (hasLegendary('phase')) {
@@ -2122,6 +2146,11 @@ function update(dt) {
     }
   }
   if (walkTime > 0) movePlayerBy(dx, dy, stats.playerSpeed * walkTime);
+
+  // The feet only move while the player does: pushing against a wall is standing still.
+  const moved = Math.hypot(player.x - startX, player.y - startY);
+  walking = moved > 0.01;
+  walkDistance = walking ? walkDistance + moved : 0;
 
   updateTeleport(dx, dy);
   collectHealthPack();
@@ -2166,25 +2195,11 @@ function draw() {
   drawEnemies();
   drawBoss();
 
-  // Shots and beams go under the player, so they appear to come out of the square.
+  // Shots and beams go under the player, so they appear to come out of its weapon.
   drawPortalShots();
   drawBeams();
   drawAim();
-
-  // The player. While invincible after a hit it turns pale red with a red glow
-  // and blinks between solid and faint ten times a second. During a Phase Slide
-  // it is drawn see-through, to show that walls and shots pass through it.
-  const invincible = time < invincibleUntil;
-  const faint = invincible && Math.floor(time * 10) % 2 === 1;
-  ctx.fillStyle = invincible ? COLORS.playerHit : COLORS.player;
-  if (invincible) {
-    ctx.shadowColor = COLORS.enemy;
-    ctx.shadowBlur = 16;
-  }
-  ctx.globalAlpha = faint ? 0.3 : phasing() ? 0.5 : 1;
-  ctx.fillRect(Math.round(player.x), Math.round(player.y), PLAYER_SIZE, PLAYER_SIZE);
-  ctx.globalAlpha = 1;
-  ctx.shadowBlur = 0;
+  drawPlayer();
 
   drawGunPortals(); // over the player, so a portal stays visible while the player stands at it
   drawEnemyShots(); // on top, so a shot is never hidden when it matters
@@ -2205,6 +2220,88 @@ function draw() {
   drawPortalHints();
   drawSensitivity();
   drawRunInfo();
+}
+
+// The player is a small figure seen from above, turned to face the way it is
+// aiming: two feet, shoulders, a head, and one arm reaching forward with a
+// weapon in its hand. It is drawn around the middle of the player's square,
+// with forward along +x and the figure's right side along +y. It is only a
+// picture: walls and shots still meet the square, whichever way the figure faces.
+//
+// While invincible after a hit it turns pale red with a red glow and blinks
+// between solid and faint ten times a second. During a Phase Slide it is drawn
+// see-through, to show that walls and shots pass through it.
+function drawPlayer() {
+  const from = aim();
+  const invincible = time < invincibleUntil;
+  const faint = invincible && Math.floor(time * 10) % 2 === 1;
+  const bodyColor = invincible ? COLORS.playerHit : COLORS.player;
+  // How far forward the left foot is right now. The right foot is as far back.
+  const swing = walking ? Math.sin(walkDistance / WALK_STRIDE * Math.PI * 2) * WALK_SWING : 0;
+
+  ctx.save();
+  ctx.translate(Math.round(player.x) + PLAYER_SIZE / 2, Math.round(player.y) + PLAYER_SIZE / 2);
+  ctx.rotate(Math.atan2(from.dy, from.dx));
+  ctx.globalAlpha = faint ? 0.3 : phasing() ? 0.5 : 1;
+
+  // Feet, mostly hidden under the shoulders until they swing out.
+  ctx.fillStyle = COLORS.playerDark;
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.ellipse(1.5 - side * swing, side * 5.5, 4.5, 3, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // The weapon, held out along the line a shot takes. The blaster is a slim
+  // barrel. The portal gun is shorter and fatter, with a glowing tip in the
+  // color of the portal it just fired.
+  if (time < portalGunShown.until) {
+    const tipColor = gunPortalColor(portalGunShown.which);
+    ctx.fillStyle = COLORS.portalGun;
+    ctx.fillRect(6, -3, 7, 6);
+    ctx.fillStyle = tipColor;
+    ctx.shadowColor = tipColor;
+    ctx.shadowBlur = 10;
+    ctx.beginPath();
+    ctx.arc(14, 0, 3, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    ctx.fillStyle = COLORS.blaster;
+    ctx.shadowColor = COLORS.blaster;
+    ctx.shadowBlur = 6;
+    ctx.fillRect(7, -1.5, 10, 3);
+  }
+  ctx.shadowBlur = 0;
+
+  // The arm, from the right shoulder to the hand on the weapon.
+  ctx.strokeStyle = invincible ? COLORS.playerHit : COLORS.playerArm;
+  ctx.lineWidth = 3.5;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(2, 9);
+  ctx.lineTo(9, 1);
+  ctx.stroke();
+  ctx.fillStyle = COLORS.playerHead;
+  ctx.beginPath();
+  ctx.arc(9, 1, 2, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Shoulders, then the head on top.
+  ctx.fillStyle = bodyColor;
+  if (invincible) {
+    ctx.shadowColor = COLORS.enemy;
+    ctx.shadowBlur = 16;
+  }
+  ctx.beginPath();
+  ctx.ellipse(-0.5, 0, 6.5, 11.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = COLORS.playerHead;
+  ctx.beginPath();
+  ctx.arc(-0.5, 0, 5.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore(); // puts back the turn, the see-through setting, and the line style
 }
 
 // The room number and the run timer, in the row above the canvas. The page is
