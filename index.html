@@ -1,0 +1,2671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tiny Browser Game</title>
+<style>
+  html {
+    height: 100%;
+  }
+  /* The page is centered in the window. On a window too short to fit it, the
+     body grows instead, so the page scrolls from the top and nothing is cut off. */
+  body {
+    min-height: 100%;
+    margin: 0;
+    padding: 12px 0;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    background: #0e0f13;
+    color: #8a8fa3;
+    font: 14px/1.4 system-ui, sans-serif;
+    /* During play there is no pointer anywhere on the page, and nothing can be
+       selected or dragged, so a click can only ever mean "fire". */
+    cursor: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  /* While a menu is showing (upgrade cards or game over) the pointer comes back. */
+  body.menu {
+    cursor: auto;
+  }
+  /* The stage holds the canvas and any screen laid over it, such as game over. */
+  #stage {
+    position: relative;
+    max-width: calc(100% - 32px);
+  }
+  /* The canvas is always 640 by 480 inside. Its size on screen is set by fitRoom(). */
+  canvas {
+    display: block;
+    box-sizing: border-box;
+    max-width: 100%;
+    background: #171922;
+    border: 2px solid #2c3040;
+  }
+  /* A screen that covers the room, inside the canvas border. */
+  .overlay {
+    position: absolute;
+    inset: 2px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    background: rgba(10, 11, 15, 0.82);
+    color: #c9cde0;
+    font-size: 16px;
+    text-align: center;
+  }
+  .overlay[hidden] {
+    display: none;
+  }
+  .overlay-title {
+    font-size: 40px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: #ff4d5e;
+    text-shadow: 0 0 18px rgba(255, 77, 94, 0.6);
+  }
+  /* Two columns: a label on the left and its number on the right. */
+  .stats {
+    display: grid;
+    grid-template-columns: auto auto;
+    gap: 6px 24px;
+    text-align: left;
+    font-size: 18px;
+    font-variant-numeric: tabular-nums;
+  }
+  .stats b {
+    color: #e6e8f0;
+    text-align: right;
+  }
+  #new-best {
+    color: #3dff8a;
+    font-weight: 600;
+  }
+  .overlay-hint b {
+    padding: 1px 7px;
+    border: 1px solid #4a4f63;
+    border-radius: 4px;
+    color: #e6e8f0;
+  }
+  /* The upgrade choice shown between rooms. */
+  .pick-title {
+    color: #3dff8a;
+    text-shadow: 0 0 18px rgba(61, 255, 138, 0.5);
+  }
+  #cards {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 12px;
+  }
+  .card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    width: 172px;
+    padding: 18px 12px 14px;
+    border: 1px solid #4a4f63;
+    border-radius: 8px;
+    background: #171922;
+    color: #c9cde0;
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .card:hover, .card:focus-visible {
+    border-color: var(--upgrade-color);
+    box-shadow: 0 0 12px var(--upgrade-color);
+    outline: none;
+  }
+  .card-key {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    padding: 0 7px;
+    border: 1px solid #4a4f63;
+    border-radius: 4px;
+    color: #e6e8f0;
+    font-weight: 600;
+  }
+  .card-icon {
+    font-size: 34px;
+    line-height: 1.1;
+    color: var(--upgrade-color);
+  }
+  .card-name {
+    color: #e6e8f0;
+    font-size: 16px;
+    font-weight: 600;
+  }
+  .card-level {
+    color: #8a8fa3;
+    font-size: 12px;
+  }
+  /* Legendary skills, offered after a boss: gold border, gold glow. */
+  #upgrade-pick.legendary .pick-title {
+    color: #ffd43b;
+    text-shadow: 0 0 20px rgba(255, 212, 59, 0.7);
+  }
+  .card.legendary {
+    border: 2px solid #ffd43b;
+    background: linear-gradient(#2a2410, #171922 70%);
+    box-shadow: 0 0 16px rgba(255, 212, 59, 0.55), inset 0 0 22px rgba(255, 212, 59, 0.12);
+  }
+  .card.legendary:hover, .card.legendary:focus-visible {
+    border-color: #fff3bf;
+    box-shadow: 0 0 26px rgba(255, 212, 59, 0.9), inset 0 0 26px rgba(255, 212, 59, 0.2);
+  }
+  .card.legendary .card-level {
+    color: #ffd43b;
+    font-weight: 600;
+    letter-spacing: 1px;
+  }
+  .chip.legendary {
+    border-color: #ffd43b;
+    box-shadow: 0 0 8px rgba(255, 212, 59, 0.6);
+  }
+  #room-number, #run-time {
+    color: #c9cde0;
+  }
+  /* Small icons under the canvas for the upgrades picked so far. */
+  #upgrades {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  #upgrades:empty {
+    display: none;
+  }
+  .chip {
+    padding: 4px 8px;
+    border: 1px solid #2c3040;
+    border-radius: 4px;
+    color: var(--upgrade-color);
+  }
+  .chip small {
+    margin-left: 4px;
+    color: #8a8fa3;
+    font-size: 12px;
+  }
+  #hearts {
+    letter-spacing: 2px;
+  }
+  #hearts-full {
+    color: #ff4d5e;
+  }
+  #hearts-empty {
+    color: #3a3e4f;
+  }
+  /* Half a heart: the glyph is filled by a background that is red on the left
+     half and dim on the right half. */
+  #hearts-half {
+    margin-right: 2px;
+    letter-spacing: 0;
+    background: linear-gradient(90deg, #ff4d5e 50%, #3a3e4f 50%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  #top {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 4px 28px;
+    font-size: 20px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  #score {
+    color: #e6e8f0;
+  }
+  /* Red while enemies remain, green once the room is clear and the exit is open. */
+  #enemies-left {
+    color: #ff4d5e;
+  }
+  #enemies-left.clear {
+    color: #3dff8a;
+  }
+  #hud {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+  .slot {
+    padding: 4px 12px;
+    border: 1px solid #2c3040;
+    border-radius: 4px;
+  }
+  .slot b {
+    margin-right: 6px;
+  }
+  /* A portal hint lights up in its portal's color while that portal exists. */
+  .slot.placed {
+    color: #e6e8f0;
+    border-color: var(--slot-color);
+    box-shadow: 0 0 8px var(--slot-color);
+  }
+  #help {
+    padding: 0 16px;
+    text-align: center;
+    font-size: 13px;
+  }
+  /* The slide cooldown bar: a dark track with a fill that grows back to full. */
+  .meter {
+    display: inline-block;
+    width: 60px;
+    height: 6px;
+    margin-left: 8px;
+    vertical-align: middle;
+    background: #2c3040;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .meter span {
+    display: block;
+    width: 100%;
+    height: 100%;
+    background: #8a8fa3;
+  }
+  #slide.ready {
+    color: #e6e8f0;
+  }
+  #slide.ready .meter span {
+    background: #4fd1ff;
+  }
+  /* The aim sensitivity bar, in the color of the aim arrow. */
+  #sensitivity .meter span {
+    background: #ff3df2;
+  }
+  #sensitivity-value {
+    display: inline-block;
+    min-width: 40px;
+    margin-left: 6px;
+    color: #e6e8f0;
+    font-variant-numeric: tabular-nums;
+  }
+</style>
+</head>
+<body>
+<div id="top">
+  <span id="hearts"><span id="hearts-full"></span><span id="hearts-half"></span><span id="hearts-empty"></span></span>
+  <span id="score">Score: 0</span>
+  <span id="room-number">Room 1</span>
+  <span id="run-time">0:00</span>
+  <span id="enemies-left">Enemies left: 0</span>
+</div>
+<div id="stage">
+  <canvas id="game" width="640" height="480"></canvas>
+  <div id="game-over" class="overlay" hidden>
+    <div class="overlay-title">GAME OVER</div>
+    <div class="stats">
+      <span>Final score</span><b id="final-score">0</b>
+      <span>Rooms cleared</span><b id="final-rooms">0</b>
+      <span>Time</span><b id="final-time">0:00</b>
+      <span>Best score</span><b id="best-score">0</b>
+    </div>
+    <div id="new-best" hidden>New best score!</div>
+    <div class="overlay-hint">Press <b>Enter</b> to restart</div>
+  </div>
+  <div id="upgrade-pick" class="overlay" hidden>
+    <div class="overlay-title pick-title" id="pick-title">ROOM CLEARED</div>
+    <div id="pick-prompt">Choose an upgrade</div>
+    <div id="cards"></div>
+    <div class="overlay-hint">Click a card or press <b>1</b> <b>2</b> <b>3</b></div>
+  </div>
+</div>
+<div id="hud">
+  <span class="slot" id="slot-a"><b>E</b>Blue portal</span>
+  <span class="slot" id="slot-b"><b>R</b>Orange portal</span>
+  <span class="slot ready" id="slide"><b>Shift</b>Slide<span class="meter"><span id="slide-fill"></span></span></span>
+  <span class="slot" id="sensitivity"><b>&minus; =</b>Aim speed<span id="sensitivity-value"></span><span class="meter"><span id="sensitivity-fill"></span></span></span>
+  <span id="upgrades"></span>
+</div>
+<div id="help">
+  <div>Move: arrow keys or WASD. Slide: Shift while moving.</div>
+  <div>Click to capture the mouse, then move it to turn the arrow. Esc frees it. Blaster: click or hold. Portals: E blue, R orange.</div>
+  <div>Blast every red enemy to unlock the exit. The green portal offers an upgrade, then the next room.</div>
+  <div>+1 per enemy and per room. An enemy shot costs a heart. The health pack restores one and a half.</div>
+</div>
+
+<script>
+// ---- Constants ----
+const TILE = 32;            // grid tile size in pixels
+const COLS = 20;            // room width in tiles
+const ROWS = 15;            // room height in tiles
+const ROOM_W = COLS * TILE; // 640
+const ROOM_H = ROWS * TILE; // 480
+
+const PLAYER_SIZE = 24;     // smaller than a tile so it fits through one-tile gaps
+const PLAYER_SPEED = 260;   // pixels per second, before upgrades
+const MAX_DT = 0.05;        // cap on elapsed time per frame, in seconds
+// Collision assumes each move is shorter than one tile. Longer moves are split
+// into pieces of at most MOVE_STEP pixels, so even a fast slide cannot skip a wall.
+const MOVE_STEP = 8;
+
+const SLIDE_SPEED = 780;    // pixels per second while sliding, three times walking speed
+const SLIDE_TIME = 0.25;    // seconds a slide lasts
+const SLIDE_COOLDOWN = 1.5; // seconds from the start of one slide until the next, before upgrades
+
+const WALL_MIN = 12;        // fewest wall blocks in a room
+const WALL_MAX = 18;        // most wall blocks in a room
+
+const EXIT_MIN_DIST = 6;    // fewest tile steps between the player and a new exit portal
+const EXIT_INSET = 4;       // the exit portal's touch area is this far inside its tile
+
+const BEAM_FADE = 0.2;      // seconds a blaster beam stays visible while it fades
+const BLASTER_GAP = 0.3;    // seconds between two blaster shots, before upgrades
+const BOUNCE_NUDGE = 0.01;  // a bounced beam restarts this far off the wall, in pixels
+const PICK_GUARD = 300;     // milliseconds an upgrade choice ignores input after it appears
+
+const ROOM_SCALE_MAX = 1.5; // the room is shown at up to this many times its real size
+
+const AIM_RING_RADIUS = 24; // the ring around the player, from the player's middle, in pixels
+const AIM_ARROW_SIZE = 8;   // how far the arrowhead sticks out past the ring
+const AIM_REACH = 90;       // the aim point never gets further than this from the player, in pixels
+
+// Aim sensitivity: how far the aim point moves for each pixel the captured mouse moves.
+const SENSITIVITY_MIN = 0.25;
+const SENSITIVITY_MAX = 3;
+const SENSITIVITY_STEP = 0.25; // one press of - or = changes it by this much
+const SENSITIVITY_SAVE_KEY = 'tinyBrowserGame.aimSensitivity'; // where the browser keeps it
+// Which keys turn it down (-1) or up (+1).
+const SENSITIVITY_KEYS = {
+  Minus: -1, NumpadSubtract: -1,
+  Equal: 1,  NumpadAdd: 1,
+};
+
+const PORTAL_SHOT_SPEED = 900; // pixels per second for a portal gun shot
+const TELEPORT_DELAY = 0.5;    // seconds after a teleport before the next one can happen
+
+const ENEMY_SIZE = 22;         // enemy square, in pixels
+const ENEMY_SPEED = 45;        // pixels per second while wandering
+const ENEMY_MIN_DIST = 6;      // fewest tile steps between the player and a new enemy
+const ENEMY_BASE = 2;          // enemies in the first room
+const ENEMY_ROOMS_PER_EXTRA = 2; // one more enemy every this many rooms
+const ENEMY_MAX = 10;          // most enemies a room can have
+const ENEMY_FIRE_EVERY = 2;    // seconds between one enemy's shots
+const ENEMY_GRACE = 1;         // seconds at the start of a room before any enemy may fire
+const ENEMY_REACTION = 0.35;   // seconds an enemy must see the player before it fires
+const ENEMY_SHOT_SPEED = 220;  // pixels per second
+const ENEMY_SHOT_RADIUS = 4;   // pixels
+const BURST_TIME = 0.3;        // seconds the ring left by a dead enemy lasts
+
+const BOSS_EVERY = 5;             // every this many rooms, the room is a boss room
+const BOSS_SIZE = 66;             // boss square, in pixels: three times a normal enemy
+const BOSS_BASE_HEALTH = 20;      // beam hits the first boss takes
+const BOSS_HEALTH_PER_BOSS = 10;  // extra hits for each boss after the first
+const BOSS_WALL_MIN = 4;          // fewest wall blocks in a boss room
+const BOSS_WALL_MAX = 6;          // most wall blocks in a boss room
+const BOSS_MIN_DIST = 7;          // fewest tile steps between the player and the boss as the room starts
+const BOSS_FIRST_ATTACK = 1.5;    // seconds before its first attack
+const BOSS_REST = 1.6;            // seconds it rests between attacks
+const BOSS_WARN = 0.6;            // seconds it flashes before a charge
+const BOSS_RAGE_FACTOR = 0.55;    // below half health, rests and warnings shrink to this share of normal
+const BOSS_DRIFT_SPEED = 40;      // pixels per second while it drifts toward the player between attacks
+const BOSS_CHARGE_SPEED = 520;    // pixels per second during a charge
+const BOSS_CHARGE_DISTANCE = 420; // the longest a charge can be, in pixels
+const BOSS_RING_SHOTS = 16;       // shots in one ring attack
+const BOSS_HIT_FLASH = 0.08;      // seconds it flashes white when a beam hits it
+const BOSS_SCORE = 5;             // score for destroying a boss
+
+// Numbers used by the legendary skills. The skills themselves are listed in LEGENDARIES.
+const CHAIN_JUMPS = 2;            // Chain Lightning: enemies it jumps to after the one the beam hit
+const CHAIN_RANGE = 170;          // Chain Lightning: the furthest one jump can reach, in pixels
+const ARC_FADE = 0.25;            // seconds a lightning arc stays visible
+const BLAST_RADIUS = 44;          // Explosive Rounds: how far the explosion reaches, in pixels
+const BLAST_FADE = 0.3;           // seconds an explosion stays visible
+const SLOW_TIME = 2;              // Time Slow: seconds it lasts after a slide starts
+const SLOW_FACTOR = 0.5;          // Time Slow: enemies and their shots move at this share of full speed
+const VAMPIRE_KILLS = 5;          // Vampire: kills needed for each heart healed
+
+const START_HEARTS = 5;        // hearts at the start of a run
+const INVINCIBLE_TIME = 1;     // seconds after a hit during which nothing can hurt the player
+const BEST_SCORE_KEY = 'tinyBrowserGame.bestScore'; // where the browser keeps the best score
+
+const HEALTH_PACK_HEAL = 1.5;     // hearts restored by a health pack
+const HEALTH_PACK_SIZE = 16;      // health pack square, in pixels
+const HEALTH_PACK_MIN_DIST = 4;   // fewest tile steps between the player and a new health pack
+
+const COLORS = {
+  player: '#4fd1ff',
+  playerHit: '#ffd0d4',     // the player while it flashes after being hit
+  wall: '#4a4f63',
+  exitLocked: '#ff4d5e',    // the exit portal while enemies are still alive
+  exitLockedDark: '#3d1219',
+  exitOpen: '#3dff8a',      // the exit portal once the room is clear
+  exitOpenDark: '#0b3320',
+  blaster: '#ff3df2',       // blaster beams and the aim arrow
+  aimRing: 'rgba(230, 232, 240, 0.4)',   // the thin ring around the player
+  aimGuide: 'rgba(230, 232, 240, 0.3)',  // the dotted line from the arrow to the wall
+  beamCore: '#ffe9fd',      // near-white center of a blaster beam
+  portalA: '#3d8bff',       // gun portal A, the E key
+  portalB: '#ff9a3d',       // gun portal B, the R key
+  portalA2: '#a46bff',      // second pair, from Portal Master: its E portal
+  portalB2: '#c8f03c',      // second pair: its R portal
+  legendary: '#ffd43b',     // gold, for everything legendary
+  arc: '#cfefff',           // Chain Lightning arcs
+  blast: '#ffa94d',         // Explosive Rounds explosions
+  slowTint: 'rgba(79, 209, 255, 0.08)', // laid over the room while Time Slow is running
+  enemy: '#ff4d5e',
+  enemyCore: '#7a1a26',     // dark middle of an enemy
+  enemyShot: '#ffe14d',
+  boss: '#e03131',          // the boss's body, and its health bar
+  bossRage: '#ff922b',      // the same, once it is below half health
+  bossCore: '#2b0a0f',      // its dark middle
+  bossWarn: '#fff3bf',      // the flash before it charges, and when a beam hits it
+  healthPack: '#f2f4fa',    // the pale box of a health pack
+  healthCross: '#ff4d5e',   // the cross on it
+};
+
+// Which keys shoot which gun portal. The blaster is always on the left mouse button.
+const PORTAL_KEYS = {
+  KeyE: 'a',
+  KeyR: 'b',
+};
+// Which keys pick which card while an upgrade choice is showing (counting from 0).
+const PICK_KEYS = {
+  Digit1: 0, Numpad1: 0,
+  Digit2: 1, Numpad2: 1,
+  Digit3: 2, Numpad3: 2,
+};
+
+// ---- Upgrades ----
+// Every upgrade in the game is one entry in this list. To add a new one, add an
+// entry. Nothing else needs to change if it only adjusts numbers in "stats".
+//   id     a unique name used in code
+//   name   the title on its card
+//   text   what one pick does, shown on its card
+//   icon   one character, shown on the card and under the canvas
+//   color  the color of that icon
+//   max    how many times it can be picked in one run
+//   apply  (optional) changes the stats object. It runs once per pick held,
+//          starting from the base stats, so two picks apply it twice.
+//   onPick (optional) runs once at the moment of picking, for one-off effects.
+// The stats that "apply" can change are listed in baseStats() further down.
+const UPGRADES = [
+  {
+    id: 'fireRate', name: 'Rapid fire', text: 'Blaster fires 25% faster',
+    icon: '✦', color: '#ff3df2', max: 4,
+    apply(stats) { stats.blasterGap *= 0.8; },
+  },
+  {
+    id: 'slide', name: 'Quick slide', text: 'Slide cooldown 20% shorter',
+    icon: '↠', color: '#4fd1ff', max: 4,
+    apply(stats) { stats.slideCooldown *= 0.8; },
+  },
+  {
+    id: 'heart', name: 'Extra heart', text: '+1 max heart and heal 1 heart',
+    icon: '♥︎', color: '#ff4d5e', max: 5,
+    onPick() {
+      maxHearts += 1;
+      hearts = Math.min(maxHearts, hearts + 1);
+    },
+  },
+  {
+    id: 'speed', name: 'Swift', text: 'Move 10% faster',
+    icon: '➤', color: '#3dff8a', max: 4,
+    apply(stats) { stats.playerSpeed *= 1.1; },
+  },
+  {
+    id: 'bounce', name: 'Ricochet', text: 'Beams bounce off one more wall',
+    icon: '∠', color: '#ffe14d', max: 3,
+    apply(stats) { stats.beamBounces += 1; },
+  },
+  {
+    id: 'pierce', name: 'Piercing beam', text: 'Beams pass through one more enemy',
+    icon: '⇉', color: '#c77dff', max: 3,
+    apply(stats) { stats.beamPierce += 1; },
+  },
+];
+
+// ---- Legendary skills ----
+// Every legendary skill in the game is one entry in this list. They are offered
+// three at a time after a boss is destroyed, and each can be owned only once.
+//   id     a unique name used in code
+//   name   the title on its card
+//   text   what it does, shown on its card
+//   icon   one character, shown on the card and, in gold, under the canvas
+//   onPick (optional) runs once at the moment of picking
+// To add a new one: add an entry here, then put its effect where it belongs in
+// the game, wrapped in "if (hasLegendary('its id'))". Search for hasLegendary
+// to see how each of these six is done.
+const LEGENDARIES = [
+  { id: 'chain', name: 'Chain Lightning', icon: '↯',
+    text: 'Beams jump from the enemy they hit to 2 nearby enemies' },
+  { id: 'portals', name: 'Portal Master', icon: '◎',
+    text: 'Four portals. E and R take turns between two pairs' },
+  { id: 'slow', name: 'Time Slow', icon: '◷',
+    text: 'Enemies and their shots move at half speed for 2 seconds after a slide' },
+  { id: 'explosive', name: 'Explosive Rounds', icon: '✸',
+    text: 'Beams explode where they end and destroy enemies close by' },
+  { id: 'vampire', name: 'Vampire', icon: '✚',
+    text: 'Every 5th kill heals 1 heart',
+    onPick() { vampireKills = 0; } },
+  { id: 'phase', name: 'Phase Slide', icon: '⇝',
+    text: 'Slide through walls and enemy shots' },
+];
+
+// The gun portals come in pairs. A portal only links to the other one in its pair.
+// The second pair is only used with the Portal Master legendary.
+const PORTAL_PAIRS = [['a', 'b'], ['a2', 'b2']];
+const PORTAL_NAMES = { a: 'Blue', b: 'Orange', a2: 'Violet', b2: 'Lime' };
+
+// ---- Setup ----
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('score');
+
+// Player position is the top-left corner, in pixels.
+const player = {
+  x: (ROOM_W - PLAYER_SIZE) / 2,
+  y: (ROOM_H - PLAYER_SIZE) / 2,
+};
+
+// ---- Room ----
+// walls[row][col] is true where a wall block fills that tile.
+let walls = [];
+// The exit portal leads to the next room. It sits in one tile, given by its column and row.
+const exitPortal = { col: 0, row: 0 };
+let score = 0;
+// Seconds of game time since the page loaded. Drives fades and cooldowns.
+let time = 0;
+// Blaster beams still fading: { x1, y1, x2, y2, age }. Cleared with each new room.
+const beams = [];
+
+// The portals made by the portal gun. Each is null until placed. A placed portal
+// is a wall face, stored as { col, row, nx, ny }: the free tile in front of the wall,
+// and the direction the face points (out of the wall, toward that tile).
+// 'a' and 'b' are the usual pair. 'a2' and 'b2' are the second pair, which only
+// the Portal Master legendary can place.
+const gunPortals = { a: null, b: null, a2: null, b2: null };
+// With Portal Master, which pair each key shoots next: 0 for the first, 1 for the second.
+const portalTurn = { a: 0, b: 0 };
+// Portal gun shots still flying: { which, x, y, dx, dy, left, face }.
+// "left" is the distance still to travel and "face" is the wall face it will land on.
+const portalShots = [];
+let teleportReadyAt = 0; // game time when teleporting is allowed again
+let lastExit = null;     // 'a' or 'b': the gun portal the player last came out of
+
+// The slide in progress: seconds left, and the direction it was started in.
+const slide = { left: 0, dx: 0, dy: 0 };
+let slideReadyAt = 0;    // game time when the next slide is allowed
+
+let room = 1;            // which room this is, counting from 1. More rooms means more enemies.
+// Enemies alive in this room: { x, y, dx, dy, turnAt, fireAt }. x and y are the
+// top-left corner, (dx, dy) is the direction it wanders in, and turnAt and fireAt
+// are the game times of its next change of direction and its next shot.
+const enemies = [];
+// Enemy shots still flying: { x, y, dx, dy, left }. "left" is the distance to the wall ahead.
+const enemyShots = [];
+// Rings left behind by enemies that were just destroyed: { x, y, age }.
+const bursts = [];
+
+let maxHearts = START_HEARTS; // how many hearts the player can have
+let hearts = START_HEARTS;    // how many are left, in steps of half a heart. At zero the run ends.
+// This room's health pack, as the { col, row } of its tile, or null once it is picked up.
+let healthPack = null;
+
+// The boss, in a boss room, or null in every other room and once it is destroyed.
+//   x, y               top-left corner
+//   health, maxHealth  beam hits left, and how many it started with
+//   state              'rest' (drifting between attacks), 'warn' (flashing before a charge), or 'charge'
+//   timer              seconds left in the rest or the warning
+//   nextAttack         'ring' or 'charge': which attack follows this rest
+//   dx, dy, left       direction of the charge, and how far it still has to run
+//   hitUntil           it is drawn flashing until this game time, after a beam hits it
+let boss = null;
+
+// Upgrades picked this run, as id -> number of picks. Empty at the start of a run.
+const upgradeLevels = {};
+// The numbers upgrades can change. Rebuilt from the base values after every pick.
+let stats = baseStats();
+let picking = false;      // true while the upgrade choice is showing and the game is paused
+let offers = [];          // the upgrades, or legendary skills, on the cards being shown
+let pickOpenedAt = 0;     // when the choice appeared, in milliseconds from performance.now()
+
+// Legendary skills owned this run, as id -> true. Empty at the start of a run.
+const legendariesOwned = {};
+let legendaryDue = false;    // true from a boss's death until the next card choice
+let offersLegendary = false; // true when the cards being shown are legendary skills
+// Chain Lightning arcs still fading: { points, age }. Cleared with each new room.
+const arcs = [];
+// Explosive Rounds explosions still fading: { x, y, age }. Cleared with each new room.
+const blasts = [];
+let slowUntil = 0;           // Time Slow: enemies are slowed until this game time
+let vampireKills = 0;        // Vampire: kills counted toward the next heart
+
+// The run timer and whether it has started. It starts on the first movement key.
+let runStarted = false;
+let runSeconds = 0;
+let invincibleUntil = 0;      // nothing can hurt the player until this game time
+let gameOver = false;         // true from the last heart lost until the player restarts
+let bestScore = 0;            // highest final score, kept by the browser between visits
+
+function randomInt(min, max) {
+  return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+// First and last tile index covered by the pixel span from start to end.
+function firstTile(start) {
+  return Math.floor(start / TILE);
+}
+function lastTile(end) {
+  return Math.ceil(end / TILE) - 1;
+}
+
+// The tile under the middle of the player.
+function playerTile() {
+  return {
+    col: Math.floor((player.x + PLAYER_SIZE / 2) / TILE),
+    row: Math.floor((player.y + PLAYER_SIZE / 2) / TILE),
+  };
+}
+
+// Scatter wall blocks at random. "count" is how many. "reserved", if given, is a
+// function that says which tiles must be left free: reserved(col, row) is true for those.
+function placeWalls(count = randomInt(WALL_MIN, WALL_MAX), reserved = null) {
+  walls = Array.from({ length: ROWS }, () => new Array(COLS).fill(false));
+
+  // Tiles under the player stay free so the player never starts inside a wall.
+  const c0 = firstTile(player.x), c1 = lastTile(player.x + PLAYER_SIZE);
+  const r0 = firstTile(player.y), r1 = lastTile(player.y + PLAYER_SIZE);
+
+  let remaining = count;
+  while (remaining > 0) {
+    const col = randomInt(0, COLS - 1);
+    const row = randomInt(0, ROWS - 1);
+    if (walls[row][col]) continue;
+    if (col >= c0 && col <= c1 && row >= r0 && row <= r1) continue;
+    if (reserved && reserved(col, row)) continue;
+    walls[row][col] = true;
+    remaining--;
+  }
+}
+
+// Put the exit portal on a random free tile that is not too close to the player,
+// and not on a reserved tile.
+function placeExitPortal(reserved = null) {
+  const start = playerTile();
+  while (true) {
+    const col = randomInt(0, COLS - 1);
+    const row = randomInt(0, ROWS - 1);
+    if (walls[row][col]) continue;
+    if (reserved && reserved(col, row)) continue;
+    if (Math.abs(col - start.col) + Math.abs(row - start.row) < EXIT_MIN_DIST) continue;
+    exitPortal.col = col;
+    exitPortal.row = row;
+    return;
+  }
+}
+
+// Flood fill from the player's tile through free tiles. Returns a grid the same
+// shape as walls, true for every tile the player can walk to.
+// Steps go up, down, left, and right only, because the player cannot squeeze
+// diagonally between two wall blocks that touch at a corner.
+function reachableTiles() {
+  const start = playerTile();
+  const reach = walls.map((row) => row.map(() => false));
+  const todo = [[start.col, start.row]];
+  reach[start.row][start.col] = true;
+
+  while (todo.length > 0) {
+    const [col, row] = todo.pop();
+    for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const c = col + dc;
+      const r = row + dr;
+      if (c < 0 || c >= COLS || r < 0 || r >= ROWS || walls[r][c] || reach[r][c]) continue;
+      reach[r][c] = true;
+      todo.push([c, r]);
+    }
+  }
+  return reach;
+}
+
+// Build a new room around the player's current position.
+// Layouts where walls seal off the exit portal are thrown away and rebuilt.
+// A boss room has fewer walls, no ordinary enemies, and one boss. The boss starts
+// in a block of three by three tiles that is kept free of walls and of the exit.
+function generateRoom() {
+  const bossRoom = isBossRoom(room);
+  let reach;
+  let bossSpot = null;  // top-left tile of the boss's starting block
+  let reserved = null;  // says which tiles belong to that block
+  do {
+    if (bossRoom) {
+      bossSpot = pickBossSpot();
+      const spot = bossSpot;
+      reserved = (col, row) => col >= spot.col && col <= spot.col + 2 && row >= spot.row && row <= spot.row + 2;
+      placeWalls(randomInt(BOSS_WALL_MIN, BOSS_WALL_MAX), reserved);
+    } else {
+      placeWalls();
+    }
+    placeExitPortal(reserved);
+    reach = reachableTiles();
+  } while (!reach[exitPortal.row][exitPortal.col] || (bossRoom && !reach[bossSpot.row + 1][bossSpot.col + 1]));
+
+  // Nothing from the old room carries over.
+  beams.length = 0;
+  portalShots.length = 0;
+  for (const which in gunPortals) gunPortals[which] = null;
+  portalTurn.a = 0;
+  portalTurn.b = 0;
+  lastExit = null;
+  enemyShots.length = 0;
+  bursts.length = 0;
+  arcs.length = 0;
+  blasts.length = 0;
+  boss = null;
+
+  if (bossRoom) {
+    enemies.length = 0;
+    spawnBoss(bossSpot);
+  } else {
+    spawnEnemies(reach);
+  }
+  placeHealthPack(reach);
+}
+
+// Put this room's one health pack on a random tile the player can walk to,
+// a few steps away and not on the exit portal.
+function placeHealthPack(reach) {
+  const start = playerTile();
+  const spots = [];
+  for (let row = 0; row < ROWS; row++) {
+    for (let col = 0; col < COLS; col++) {
+      if (!reach[row][col]) continue;
+      if (col === exitPortal.col && row === exitPortal.row) continue;
+      if (Math.abs(col - start.col) + Math.abs(row - start.row) < HEALTH_PACK_MIN_DIST) continue;
+      spots.push({ col, row });
+    }
+  }
+  healthPack = spots.length > 0 ? spots[randomInt(0, spots.length - 1)] : null;
+}
+
+// Pick the health pack up when the player touches it. At full hearts it is left
+// where it is, so it is not wasted and can be collected later in the same room.
+function collectHealthPack() {
+  if (!healthPack || hearts >= maxHearts) return;
+  const x = (healthPack.col + 0.5) * TILE - HEALTH_PACK_SIZE / 2;
+  const y = (healthPack.row + 0.5) * TILE - HEALTH_PACK_SIZE / 2;
+  const touching = player.x < x + HEALTH_PACK_SIZE && player.x + PLAYER_SIZE > x &&
+                   player.y < y + HEALTH_PACK_SIZE && player.y + PLAYER_SIZE > y;
+  if (!touching) return;
+  hearts = Math.min(maxHearts, hearts + HEALTH_PACK_HEAL);
+  healthPack = null;
+}
+
+// The exit portal is locked while any enemy, or the boss, is still alive.
+function exitUnlocked() {
+  return enemies.length === 0 && !boss;
+}
+
+function touchingExit() {
+  const size = TILE - 2 * EXIT_INSET;
+  const px = exitPortal.col * TILE + EXIT_INSET;
+  const py = exitPortal.row * TILE + EXIT_INSET;
+  return player.x < px + size && player.x + PLAYER_SIZE > px &&
+         player.y < py + size && player.y + PLAYER_SIZE > py;
+}
+
+// Move a square (the player or an enemy) along one axis ('x' or 'y'), stopping at
+// room edges and walls. "box" has x and y for its top-left corner. Returns true if
+// something blocked the move. Moving one axis at a time lets a square slide along
+// a wall instead of sticking.
+function moveBox(box, size, axis, amount) {
+  if (amount === 0) return false;
+
+  const limit = (axis === 'x' ? ROOM_W : ROOM_H) - size;
+  const wanted = box[axis] + amount;
+  box[axis] = Math.max(0, Math.min(limit, wanted));
+  const hitEdge = box[axis] !== wanted;
+
+  const c0 = firstTile(box.x), c1 = lastTile(box.x + size);
+  const r0 = firstTile(box.y), r1 = lastTile(box.y + size);
+  for (let row = r0; row <= r1; row++) {
+    for (let col = c0; col <= c1; col++) {
+      if (!walls[row][col]) continue;
+      // Push the square back so it sits flush against the wall it ran into.
+      const tile = axis === 'x' ? col : row;
+      box[axis] = amount > 0 ? tile * TILE - size : (tile + 1) * TILE;
+      return true;
+    }
+  }
+  return hitEdge;
+}
+
+function movePlayer(axis, amount) {
+  moveBox(player, PLAYER_SIZE, axis, amount);
+}
+
+// Follow a ray from (x, y) in the unit direction (dx, dy) until it reaches a wall
+// block or the edge of the room. Returns where it stopped:
+//   x, y      the hit point
+//   col, row  the last free tile the ray was in, which is the tile in front of the hit
+//   nx, ny    which way the hit surface faces, for example (-1, 0) for a left-facing side
+//   dist      how far the ray travelled
+// The ray is walked one tile boundary at a time, so it cannot skip through a wall.
+function castRay(x, y, dx, dy) {
+  let col = Math.floor(x / TILE);
+  let row = Math.floor(y / TILE);
+  const stepCol = dx > 0 ? 1 : -1;
+  const stepRow = dy > 0 ? 1 : -1;
+
+  // Ray distance between one vertical grid line and the next, and the same for horizontal lines.
+  const gapX = dx !== 0 ? TILE / Math.abs(dx) : Infinity;
+  const gapY = dy !== 0 ? TILE / Math.abs(dy) : Infinity;
+  // Ray distance to the first vertical and first horizontal grid line ahead.
+  let nextX = dx !== 0 ? ((dx > 0 ? col + 1 : col) * TILE - x) / dx : Infinity;
+  let nextY = dy !== 0 ? ((dy > 0 ? row + 1 : row) * TILE - y) / dy : Infinity;
+
+  while (true) {
+    let dist, newCol = col, newRow = row, nx = 0, ny = 0;
+    if (nextX < nextY) {
+      dist = nextX; nextX += gapX; newCol += stepCol; nx = -stepCol;
+    } else {
+      dist = nextY; nextY += gapY; newRow += stepRow; ny = -stepRow;
+    }
+    const outside = newCol < 0 || newCol >= COLS || newRow < 0 || newRow >= ROWS;
+    if (outside || walls[newRow][newCol]) {
+      return { x: x + dx * dist, y: y + dy * dist, col, row, nx, ny, dist };
+    }
+    col = newCol;
+    row = newRow;
+  }
+}
+
+// Where the straight line from (x1, y1) to (x2, y2) first touches the square whose
+// top-left corner is (bx, by). The answer is a fraction of the way along the line,
+// from 0 at the start to 1 at the end, or null if the line misses the square.
+// Used to find which enemies a blaster beam reaches, and in what order.
+function segmentBoxEntry(x1, y1, x2, y2, bx, by, size) {
+  // Narrow the 0-to-1 range down to the part of the line that lies inside the
+  // square, one axis at a time.
+  let enter = 0;
+  let leave = 1;
+  for (const [start, delta, low] of [[x1, x2 - x1, bx], [y1, y2 - y1, by]]) {
+    const high = low + size;
+    if (delta === 0) {
+      if (start < low || start > high) return null; // parallel to this side and outside it
+      continue;
+    }
+    const a = (low - start) / delta;
+    const b = (high - start) / delta;
+    enter = Math.max(enter, Math.min(a, b));
+    leave = Math.min(leave, Math.max(a, b));
+    if (enter > leave) return null;
+  }
+  return enter;
+}
+
+// ---- Score ----
+function addScore(amount) {
+  score += amount;
+  scoreEl.textContent = 'Score: ' + score;
+}
+
+// ---- Enemies ----
+function enemyCountForRoom(roomNumber) {
+  return Math.min(ENEMY_MAX, ENEMY_BASE + Math.floor((roomNumber - 1) / ENEMY_ROOMS_PER_EXTRA));
+}
+
+function randomDirection() {
+  const angle = Math.random() * Math.PI * 2;
+  return { dx: Math.cos(angle), dy: Math.sin(angle) };
+}
+
+// Fill the room with enemies. They only go on tiles the player can walk to, so
+// every enemy can be reached and shot. They also start away from the player and
+// off the exit portal.
+function spawnEnemies(reach) {
+  enemies.length = 0;
+  const start = playerTile();
+
+  const spots = [];
+  for (let row = 0; row < ROWS; row++) {
+    for (let col = 0; col < COLS; col++) {
+      if (!reach[row][col]) continue;
+      if (col === exitPortal.col && row === exitPortal.row) continue;
+      if (Math.abs(col - start.col) + Math.abs(row - start.row) < ENEMY_MIN_DIST) continue;
+      spots.push([col, row]);
+    }
+  }
+
+  const count = Math.min(enemyCountForRoom(room), spots.length);
+  const centered = (TILE - ENEMY_SIZE) / 2;
+  for (let i = 0; i < count; i++) {
+    // Take a random spot out of the list, so no two enemies share a tile.
+    const [col, row] = spots.splice(randomInt(0, spots.length - 1), 1)[0];
+    const dir = randomDirection();
+    enemies.push({
+      x: col * TILE + centered,
+      y: row * TILE + centered,
+      dx: dir.dx,
+      dy: dir.dy,
+      turnAt: time + 1 + Math.random() * 2,
+      // Spread the first shots out so the enemies do not all fire at once.
+      fireAt: time + ENEMY_GRACE + Math.random() * ENEMY_FIRE_EVERY,
+    });
+  }
+}
+
+function updateEnemies(dt) {
+  const px = player.x + PLAYER_SIZE / 2;
+  const py = player.y + PLAYER_SIZE / 2;
+
+  for (const enemy of enemies) {
+    // Wander: drift in a straight line, bounce off walls, and now and then pick a new direction.
+    if (time >= enemy.turnAt) {
+      const dir = randomDirection();
+      enemy.dx = dir.dx;
+      enemy.dy = dir.dy;
+      enemy.turnAt = time + 1 + Math.random() * 2;
+    }
+    if (moveBox(enemy, ENEMY_SIZE, 'x', enemy.dx * ENEMY_SPEED * dt)) enemy.dx = -enemy.dx;
+    if (moveBox(enemy, ENEMY_SIZE, 'y', enemy.dy * ENEMY_SPEED * dt)) enemy.dy = -enemy.dy;
+
+    // Shoot: only with a clear straight line from the enemy's middle to the player's middle.
+    const ex = enemy.x + ENEMY_SIZE / 2;
+    const ey = enemy.y + ENEMY_SIZE / 2;
+    const distance = Math.hypot(px - ex, py - ey);
+    if (distance < 1) continue; // right on top of the player, so there is no direction to aim in
+    const dx = (px - ex) / distance;
+    const dy = (py - ey) / distance;
+    const ray = castRay(ex, ey, dx, dy);
+
+    if (ray.dist < distance) {
+      // A wall is in the way. Once the player comes into view, the enemy still
+      // needs a moment to react, so stepping out of cover is not punished instantly.
+      enemy.fireAt = Math.max(enemy.fireAt, time + ENEMY_REACTION);
+    } else if (time >= enemy.fireAt) {
+      // The shot keeps going past the player until the wall the ray found.
+      enemyShots.push({ x: ex, y: ey, dx, dy, left: ray.dist });
+      enemy.fireAt = time + ENEMY_FIRE_EVERY;
+    }
+  }
+}
+
+function updateEnemyShots(dt) {
+  for (let i = enemyShots.length - 1; i >= 0; i--) {
+    const shot = enemyShots[i];
+    const step = Math.min(ENEMY_SHOT_SPEED * dt, shot.left);
+    shot.x += shot.dx * step;
+    shot.y += shot.dy * step;
+    shot.left -= step;
+
+    // The shot is a small circle. Find the point of the player's square nearest
+    // to its middle; if that point is within the radius, it is a hit.
+    const nearX = Math.max(player.x, Math.min(shot.x, player.x + PLAYER_SIZE));
+    const nearY = Math.max(player.y, Math.min(shot.y, player.y + PLAYER_SIZE));
+    const touching = Math.hypot(shot.x - nearX, shot.y - nearY) <= ENEMY_SHOT_RADIUS;
+    // While the player is invincible, or sliding with Phase Slide, shots fly
+    // straight through without effect.
+    if (touching && time >= invincibleUntil && !phasing()) {
+      hurtPlayer();
+      enemyShots.splice(i, 1);
+    } else if (shot.left <= 0) {
+      enemyShots.splice(i, 1); // reached the wall
+    }
+  }
+}
+
+// ---- Boss ----
+function isBossRoom(roomNumber) {
+  return roomNumber % BOSS_EVERY === 0;
+}
+
+// Choose where the boss starts: the top-left tile of a block three tiles wide and
+// three tall, anywhere in the room, whose middle is well away from the player.
+function pickBossSpot() {
+  const start = playerTile();
+  while (true) {
+    const col = randomInt(0, COLS - 3);
+    const row = randomInt(0, ROWS - 3);
+    if (Math.abs(col + 1 - start.col) + Math.abs(row + 1 - start.row) >= BOSS_MIN_DIST) return { col, row };
+  }
+}
+
+// Put the boss in the middle of its starting block. Each boss after the first has more health.
+function spawnBoss(spot) {
+  const bossNumber = room / BOSS_EVERY; // 1 for the first boss, 2 for the second, and so on
+  const maxHealth = BOSS_BASE_HEALTH + BOSS_HEALTH_PER_BOSS * (bossNumber - 1);
+  const centered = (3 * TILE - BOSS_SIZE) / 2;
+  boss = {
+    x: spot.col * TILE + centered,
+    y: spot.row * TILE + centered,
+    health: maxHealth,
+    maxHealth,
+    state: 'rest',
+    timer: BOSS_FIRST_ATTACK,
+    nextAttack: 'ring',
+    dx: 0,
+    dy: 0,
+    left: 0,
+    hitUntil: 0,
+  };
+}
+
+// Below half health the boss attacks faster.
+function bossEnraged() {
+  return boss.health <= boss.maxHealth / 2;
+}
+
+// How long a rest or a warning lasts right now.
+function bossPace(seconds) {
+  return bossEnraged() ? seconds * BOSS_RAGE_FACTOR : seconds;
+}
+
+// Attack 1: a ring of shots going out evenly in all directions. They are
+// ordinary enemy shots, so each stops at the first wall and costs a heart if it hits.
+function fireBossRing() {
+  const x = boss.x + BOSS_SIZE / 2;
+  const y = boss.y + BOSS_SIZE / 2;
+  const turn = Math.random() * Math.PI * 2; // so the gaps are not in the same place every time
+  for (let i = 0; i < BOSS_RING_SHOTS; i++) {
+    const angle = turn + i * (Math.PI * 2 / BOSS_RING_SHOTS);
+    const dx = Math.cos(angle);
+    const dy = Math.sin(angle);
+    enemyShots.push({ x, y, dx, dy, left: castRay(x, y, dx, dy).dist });
+  }
+}
+
+function updateBoss(dt) {
+  if (!boss) return;
+  const bx = boss.x + BOSS_SIZE / 2;
+  const by = boss.y + BOSS_SIZE / 2;
+  const toX = player.x + PLAYER_SIZE / 2 - bx;
+  const toY = player.y + PLAYER_SIZE / 2 - by;
+  const distance = Math.hypot(toX, toY);
+
+  if (boss.state === 'rest') {
+    // Drift slowly toward the player until it is time for the next attack.
+    if (distance > 1) {
+      moveBox(boss, BOSS_SIZE, 'x', toX / distance * BOSS_DRIFT_SPEED * dt);
+      moveBox(boss, BOSS_SIZE, 'y', toY / distance * BOSS_DRIFT_SPEED * dt);
+    }
+    boss.timer -= dt;
+    if (boss.timer <= 0) {
+      if (boss.nextAttack === 'ring') {
+        fireBossRing();
+        boss.nextAttack = 'charge';
+        boss.timer = bossPace(BOSS_REST);
+      } else {
+        // Attack 2 begins with a warning. The charge will go where the player
+        // is at this moment, so the flash is the cue to get out of the way.
+        boss.state = 'warn';
+        boss.timer = bossPace(BOSS_WARN);
+        boss.dx = distance > 1 ? toX / distance : 1;
+        boss.dy = distance > 1 ? toY / distance : 0;
+        boss.nextAttack = 'ring';
+      }
+    }
+  } else if (boss.state === 'warn') {
+    boss.timer -= dt;
+    if (boss.timer <= 0) {
+      boss.state = 'charge';
+      boss.left = BOSS_CHARGE_DISTANCE;
+    }
+  } else {
+    // Charging: rush in a straight line until a wall, a room edge, or the full distance.
+    let stretch = Math.min(BOSS_CHARGE_SPEED * dt, boss.left);
+    boss.left -= stretch;
+    let blocked = false;
+    while (stretch > 0 && !blocked) {
+      const step = Math.min(stretch, MOVE_STEP);
+      if (moveBox(boss, BOSS_SIZE, 'x', boss.dx * step)) blocked = true;
+      if (moveBox(boss, BOSS_SIZE, 'y', boss.dy * step)) blocked = true;
+      stretch -= step;
+    }
+    if (blocked || boss.left <= 0) {
+      boss.state = 'rest';
+      boss.timer = bossPace(BOSS_REST);
+    }
+  }
+
+  // Touching the boss costs a heart, the same as being shot.
+  const touching = player.x < boss.x + BOSS_SIZE && player.x + PLAYER_SIZE > boss.x &&
+                   player.y < boss.y + BOSS_SIZE && player.y + PLAYER_SIZE > boss.y;
+  if (touching && time >= invincibleUntil) hurtPlayer();
+}
+
+// A blaster beam reached the boss.
+function hitBoss() {
+  boss.health--;
+  boss.hitUntil = time + BOSS_HIT_FLASH;
+  if (boss.health <= 0) destroyBoss();
+}
+
+// The boss is beaten: score, a full heal, and the exit unlocks because boss is null.
+function destroyBoss() {
+  bursts.push({ x: boss.x + BOSS_SIZE / 2, y: boss.y + BOSS_SIZE / 2, age: 0, size: BOSS_SIZE });
+  boss = null;
+  addScore(BOSS_SCORE);
+  hearts = maxHearts;
+  legendaryDue = true; // the next card choice offers legendary skills
+  countKill();
+}
+
+// ---- Upgrade stats and the choice between rooms ----
+// The numbers that upgrades are allowed to change, at their starting values.
+function baseStats() {
+  return {
+    playerSpeed: PLAYER_SPEED,     // pixels per second
+    blasterGap: BLASTER_GAP,       // seconds between blaster shots
+    slideCooldown: SLIDE_COOLDOWN, // seconds between slides
+    beamBounces: 0,                // walls a beam bounces off before it stops
+    beamPierce: 0,                 // enemies a beam passes through before one stops it
+  };
+}
+
+function upgradeLevel(id) {
+  return upgradeLevels[id] || 0;
+}
+
+// Rebuild the stats from scratch: start from the base values and apply each
+// upgrade once for every time it has been picked.
+function recomputeStats() {
+  stats = baseStats();
+  for (const upgrade of UPGRADES) {
+    if (!upgrade.apply) continue;
+    for (let i = 0; i < upgradeLevel(upgrade.id); i++) upgrade.apply(stats);
+  }
+}
+
+function grantUpgrade(upgrade) {
+  upgradeLevels[upgrade.id] = upgradeLevel(upgrade.id) + 1;
+  recomputeStats();
+  if (upgrade.onPick) upgrade.onPick();
+}
+
+// A new run starts with no upgrades and no legendary skills.
+function resetUpgrades() {
+  for (const id in upgradeLevels) delete upgradeLevels[id];
+  recomputeStats();
+  for (const id in legendariesOwned) delete legendariesOwned[id];
+  legendaryDue = false;
+  slowUntil = 0;
+  vampireKills = 0;
+}
+
+// ---- Legendary skills: owning and offering them ----
+function hasLegendary(id) {
+  return legendariesOwned[id] === true;
+}
+
+function grantLegendary(legendary) {
+  legendariesOwned[legendary.id] = true;
+  if (legendary.onPick) legendary.onPick();
+}
+
+// Up to three different legendary skills, chosen at random from those not owned yet.
+function pickLegendaryOffers() {
+  const open = LEGENDARIES.filter((legendary) => !hasLegendary(legendary.id));
+  const chosen = [];
+  while (chosen.length < 3 && open.length > 0) {
+    chosen.push(open.splice(randomInt(0, open.length - 1), 1)[0]);
+  }
+  return chosen;
+}
+
+// ---- Legendary skills: what each one does ----
+// Vampire: every enemy or boss destroyed counts, and every few heal a heart.
+function countKill() {
+  if (!hasLegendary('vampire')) return;
+  vampireKills++;
+  if (vampireKills >= VAMPIRE_KILLS) {
+    vampireKills = 0;
+    hearts = Math.min(maxHearts, hearts + 1);
+  }
+}
+
+// Phase Slide: true while the player is sliding and so passes through walls and shots.
+function phasing() {
+  return slide.left > 0 && hasLegendary('phase');
+}
+
+// True while the middle of the player is inside a wall block, which only a
+// Phase Slide can cause. Shots start from the middle of the player, and a shot
+// that started inside a wall would go wrong, so nothing fires while this is true.
+function middleInWall() {
+  const tile = playerTile();
+  return walls[tile.row][tile.col];
+}
+
+function playerInWall() {
+  const c0 = firstTile(player.x), c1 = lastTile(player.x + PLAYER_SIZE);
+  const r0 = firstTile(player.y), r1 = lastTile(player.y + PLAYER_SIZE);
+  for (let row = r0; row <= r1; row++) {
+    for (let col = c0; col <= c1; col++) {
+      if (walls[row][col]) return true;
+    }
+  }
+  return false;
+}
+
+// Phase Slide: move the player a distance in a direction, ignoring wall blocks.
+// The edges of the room still stop it.
+function phasePlayerBy(dx, dy, distance) {
+  player.x = Math.max(0, Math.min(ROOM_W - PLAYER_SIZE, player.x + dx * distance));
+  player.y = Math.max(0, Math.min(ROOM_H - PLAYER_SIZE, player.y + dy * distance));
+}
+
+// Phase Slide: a slide has just ended. If the player is inside a wall, get it
+// out: first by carrying on the way it was going, then by backing up, and as a
+// last resort by moving to the nearest free tile.
+function leaveWall(dx, dy) {
+  if (!playerInWall()) return;
+  const startX = player.x;
+  const startY = player.y;
+  for (const way of [1, -1]) {
+    for (let distance = 1; distance <= 3 * TILE; distance++) {
+      player.x = startX;
+      player.y = startY;
+      phasePlayerBy(dx * way, dy * way, distance);
+      if (!playerInWall()) return;
+    }
+  }
+  let nearest = Infinity;
+  const centered = (TILE - PLAYER_SIZE) / 2;
+  for (let row = 0; row < ROWS; row++) {
+    for (let col = 0; col < COLS; col++) {
+      if (walls[row][col]) continue;
+      const x = col * TILE + centered;
+      const y = row * TILE + centered;
+      const away = Math.hypot(x - startX, y - startY);
+      if (away < nearest) {
+        nearest = away;
+        player.x = x;
+        player.y = y;
+      }
+    }
+  }
+}
+
+// True if nothing solid lies on the straight line between two points.
+// The first point must be in open space, which the middle of an enemy always is.
+function clearLine(x1, y1, x2, y2) {
+  const length = Math.hypot(x2 - x1, y2 - y1);
+  if (length < 1) return true;
+  return castRay(x1, y1, (x2 - x1) / length, (y2 - y1) / length).dist >= length;
+}
+
+// Chain Lightning: from the spot where a beam struck, jump to the nearest enemy
+// in range with a clear line to it, then from that one to the next. Each enemy
+// reached is destroyed. The boss can be reached too, and loses one health, but
+// only if this beam has not already hurt it ("bossStruck").
+function chainLightning(x, y, bossStruck) {
+  for (let jump = 0; jump < CHAIN_JUMPS; jump++) {
+    let target = null; // { enemy, x, y }, where a null enemy means the boss
+    let nearest = CHAIN_RANGE;
+    for (const enemy of enemies) {
+      const ex = enemy.x + ENEMY_SIZE / 2;
+      const ey = enemy.y + ENEMY_SIZE / 2;
+      const away = Math.hypot(ex - x, ey - y);
+      if (away <= nearest && clearLine(x, y, ex, ey)) {
+        nearest = away;
+        target = { enemy, x: ex, y: ey };
+      }
+    }
+    if (boss && !bossStruck) {
+      const bx = boss.x + BOSS_SIZE / 2;
+      const by = boss.y + BOSS_SIZE / 2;
+      const away = Math.hypot(bx - x, by - y);
+      if (away <= nearest && clearLine(x, y, bx, by)) target = { enemy: null, x: bx, y: by };
+    }
+    if (!target) return;
+
+    arcs.push(makeArc(x, y, target.x, target.y));
+    if (target.enemy) {
+      destroyEnemy(target.enemy);
+    } else {
+      bossStruck = true;
+      hitBoss();
+    }
+    x = target.x;
+    y = target.y;
+  }
+}
+
+// A jagged line between two points: the points in between are nudged sideways at random.
+function makeArc(x1, y1, x2, y2) {
+  const pieces = 5;
+  const length = Math.hypot(x2 - x1, y2 - y1) || 1;
+  const sideX = -(y2 - y1) / length;
+  const sideY = (x2 - x1) / length;
+  const points = [{ x: x1, y: y1 }];
+  for (let i = 1; i < pieces; i++) {
+    const nudge = (Math.random() - 0.5) * 18;
+    points.push({
+      x: x1 + (x2 - x1) * i / pieces + sideX * nudge,
+      y: y1 + (y2 - y1) * i / pieces + sideY * nudge,
+    });
+  }
+  points.push({ x: x2, y: y2 });
+  return { points, age: 0 };
+}
+
+// Explosive Rounds: an explosion where a beam ended. It destroys every enemy
+// whose square it reaches. It takes one health off the boss if it reaches the
+// boss and this beam has not already hurt it. Returns true if it hurt the boss.
+function explodeAt(x, y, bossStruck) {
+  blasts.push({ x, y, age: 0 });
+  // How far a point is from the nearest part of a square.
+  const reach = (bx, by, size) => Math.hypot(x - Math.max(bx, Math.min(x, bx + size)), y - Math.max(by, Math.min(y, by + size)));
+
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    if (reach(enemies[i].x, enemies[i].y, ENEMY_SIZE) <= BLAST_RADIUS) destroyEnemy(enemies[i]);
+  }
+  if (boss && !bossStruck && reach(boss.x, boss.y, BOSS_SIZE) <= BLAST_RADIUS) {
+    hitBoss();
+    return true;
+  }
+  return false;
+}
+
+// Up to three different upgrades, chosen at random from those not yet at their limit.
+function pickOffers() {
+  const open = UPGRADES.filter((upgrade) => upgradeLevel(upgrade.id) < upgrade.max);
+  const chosen = [];
+  while (chosen.length < 3 && open.length > 0) {
+    chosen.push(open.splice(randomInt(0, open.length - 1), 1)[0]);
+  }
+  return chosen;
+}
+
+const upgradePickEl = document.getElementById('upgrade-pick');
+const cardsEl = document.getElementById('cards');
+
+// The player has touched the open exit. The room counts as cleared now. The
+// game then waits for an upgrade to be chosen before the next room is built.
+function leaveRoom() {
+  addScore(1);
+  mouse.leftDown = false; // a held fire button must not carry into the next room
+
+  // After a boss, the cards are legendary skills. If every legendary is owned
+  // already, or this was an ordinary room, they are normal upgrades.
+  offers = legendaryDue ? pickLegendaryOffers() : [];
+  offersLegendary = offers.length > 0;
+  legendaryDue = false;
+  if (!offersLegendary) offers = pickOffers();
+
+  if (offers.length === 0) {
+    startNextRoom(); // every upgrade is at its limit, so there is nothing to choose
+    return;
+  }
+  picking = true;
+  pickOpenedAt = performance.now();
+  showCards();
+  setMenuOpen(true); // the cards need a visible pointer
+}
+
+// Build one card per offer. Each card is a button, so it can be clicked.
+function showCards() {
+  // The heading and the look of the whole screen depend on which kind is on offer.
+  upgradePickEl.classList.toggle('legendary', offersLegendary);
+  document.getElementById('pick-title').textContent = offersLegendary ? 'BOSS DEFEATED' : 'ROOM CLEARED';
+  document.getElementById('pick-prompt').textContent = offersLegendary ? 'Choose a legendary skill' : 'Choose an upgrade';
+
+  cardsEl.textContent = '';
+  offers.forEach((upgrade, index) => {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = offersLegendary ? 'card legendary' : 'card';
+    card.style.setProperty('--upgrade-color', offersLegendary ? COLORS.legendary : upgrade.color);
+    card.addEventListener('click', () => chooseUpgrade(index));
+
+    const parts = [
+      ['card-key', String(index + 1)],
+      ['card-icon', upgrade.icon],
+      ['card-name', upgrade.name],
+      ['card-text', upgrade.text],
+      ['card-level', offersLegendary ? 'LEGENDARY' : 'Level ' + (upgradeLevel(upgrade.id) + 1) + ' of ' + upgrade.max],
+    ];
+    for (const [className, text] of parts) {
+      const part = document.createElement('span');
+      part.className = className;
+      part.textContent = text;
+      card.appendChild(part);
+    }
+    cardsEl.appendChild(card);
+  });
+  upgradePickEl.hidden = false;
+}
+
+// Take the card at this position (0, 1, or 2) and move on to the next room.
+function chooseUpgrade(index) {
+  if (!picking || !offers[index]) return;
+  // Ignore input for a moment after the cards appear, so a click or key press
+  // meant for the fight cannot pick a card by accident.
+  if (performance.now() - pickOpenedAt < PICK_GUARD) return;
+  if (offersLegendary) grantLegendary(offers[index]); else grantUpgrade(offers[index]);
+  picking = false;
+  offers = [];
+  upgradePickEl.hidden = true;
+  setMenuOpen(false);
+  startNextRoom();
+}
+
+function startNextRoom() {
+  room++;
+  generateRoom(); // the player keeps its position; the new room is built around it
+}
+
+// The small icons under the canvas, one per upgrade picked, with a count when
+// it has been picked more than once. The page is only touched when they change.
+const upgradesEl = document.getElementById('upgrades');
+let shownUpgrades = '';
+
+function drawUpgradeIcons() {
+  const key = UPGRADES.map((upgrade) => upgradeLevel(upgrade.id)).join(',') + '|' +
+              LEGENDARIES.map((legendary) => (hasLegendary(legendary.id) ? 1 : 0)).join('');
+  if (key === shownUpgrades) return;
+  shownUpgrades = key;
+  upgradesEl.textContent = '';
+  for (const upgrade of UPGRADES) {
+    const level = upgradeLevel(upgrade.id);
+    if (level === 0) continue;
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.style.setProperty('--upgrade-color', upgrade.color);
+    chip.title = upgrade.name + ', level ' + level + ' of ' + upgrade.max;
+    chip.textContent = upgrade.icon;
+    if (level > 1) {
+      const count = document.createElement('small');
+      count.textContent = '×' + level;
+      chip.appendChild(count);
+    }
+    upgradesEl.appendChild(chip);
+  }
+  // Legendary skills come after the normal upgrades, in gold.
+  for (const legendary of LEGENDARIES) {
+    if (!hasLegendary(legendary.id)) continue;
+    const chip = document.createElement('span');
+    chip.className = 'chip legendary';
+    chip.style.setProperty('--upgrade-color', COLORS.legendary);
+    chip.title = legendary.name + ' (legendary): ' + legendary.text;
+    chip.textContent = legendary.icon;
+    upgradesEl.appendChild(chip);
+  }
+  fitRoom(); // more icons can wrap this row onto a second line, which leaves less height for the room
+}
+
+// ---- Health, game over, and restart ----
+const gameOverEl = document.getElementById('game-over');
+
+// Take one heart away and make the player invincible for a moment.
+// With only half a heart left, the hit takes that half.
+function hurtPlayer() {
+  hearts = Math.max(0, hearts - 1);
+  invincibleUntil = time + INVINCIBLE_TIME;
+  if (hearts <= 0) endGame();
+}
+
+// Read the best score the browser saved on an earlier visit. Some browsers block
+// storage for pages opened straight from a file; then the best score just starts at 0.
+function loadBestScore() {
+  try {
+    const saved = Number(localStorage.getItem(BEST_SCORE_KEY));
+    bestScore = Number.isFinite(saved) && saved > 0 ? Math.floor(saved) : 0;
+  } catch {
+    bestScore = 0;
+  }
+}
+
+function saveBestScore() {
+  try {
+    localStorage.setItem(BEST_SCORE_KEY, String(bestScore));
+  } catch {
+    // Storage is blocked. The best score still counts until the page is closed.
+  }
+}
+
+// Stop the game and show the game over screen.
+function endGame() {
+  gameOver = true;
+  mouse.leftDown = false;
+  const isNewBest = score > bestScore;
+  if (isNewBest) {
+    bestScore = score;
+    saveBestScore();
+  }
+  document.getElementById('final-score').textContent = score;
+  document.getElementById('final-rooms').textContent = room - 1;
+  document.getElementById('final-time').textContent = formatTime(runSeconds);
+  document.getElementById('best-score').textContent = bestScore;
+  document.getElementById('new-best').hidden = !isNewBest;
+  gameOverEl.hidden = false;
+  setMenuOpen(true);
+}
+
+// Start a fresh run: room 1, full hearts, score 0, player back in the middle.
+function restartGame() {
+  gameOver = false;
+  gameOverEl.hidden = true;
+  setMenuOpen(false);
+
+  score = 0;
+  addScore(0); // refresh the score readout
+  room = 1;
+  runStarted = false; // the timer waits for the first movement key again
+  runSeconds = 0;
+  resetUpgrades();
+  maxHearts = START_HEARTS;
+  hearts = START_HEARTS;
+  invincibleUntil = 0;
+
+  player.x = (ROOM_W - PLAYER_SIZE) / 2;
+  player.y = (ROOM_H - PLAYER_SIZE) / 2;
+  slide.left = 0;
+  slideReadyAt = 0;
+  teleportReadyAt = 0;
+  lastBlasterShot = -Infinity;
+
+  generateRoom();
+}
+
+loadBestScore();
+generateRoom();
+
+// ---- Input ----
+// Physical key codes, so WASD works on any keyboard layout.
+const KEY_DIRS = {
+  ArrowLeft: [-1, 0], KeyA: [-1, 0],
+  ArrowRight: [1, 0], KeyD: [1, 0],
+  ArrowUp: [0, -1],   KeyW: [0, -1],
+  ArrowDown: [0, 1],  KeyS: [0, 1],
+};
+const held = new Set();
+
+window.addEventListener('keydown', (e) => {
+  if (e.code in KEY_DIRS) {
+    held.add(e.code);
+    e.preventDefault(); // stop arrow keys from scrolling the page
+    if (!gameOver) runStarted = true; // the run timer starts with the first movement key
+  } else if (e.code in SENSITIVITY_KEYS) {
+    // Works at any time, menus included. Holding the key keeps changing it.
+    changeSensitivity(SENSITIVITY_KEYS[e.code]);
+  } else if (picking) {
+    // While the upgrade choice is showing, the number keys pick a card and
+    // every other key waits.
+    if (e.code in PICK_KEYS && !e.repeat) chooseUpgrade(PICK_KEYS[e.code]);
+  } else if (e.code in PORTAL_KEYS) {
+    // One portal shot per press. Holding the key down does not fire a stream.
+    if (!e.repeat && !gameOver) firePortalFromKey(PORTAL_KEYS[e.code]);
+  } else if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
+    // Only a fresh press counts. Holding Shift down must not start slide after slide.
+    if (!e.repeat) startSlide();
+  } else if (e.code === 'Enter' || e.code === 'NumpadEnter') {
+    // Enter only restarts from the game over screen, so a stray press cannot end a run.
+    if (gameOver) restartGame();
+  }
+});
+window.addEventListener('keyup', (e) => {
+  held.delete(e.code);
+});
+// Releasing a key while the window is unfocused never fires keyup,
+// so drop all held keys when focus is lost.
+window.addEventListener('blur', () => {
+  held.clear();
+  mouse.leftDown = false;
+});
+
+// The direction the held movement keys point in, as a unit vector, or (0, 0) for none.
+function inputDirection() {
+  let dx = 0;
+  let dy = 0;
+  for (const code of held) {
+    dx += KEY_DIRS[code][0];
+    dy += KEY_DIRS[code][1];
+  }
+  // Opposite keys cancel; two keys for the same direction count once.
+  dx = Math.sign(dx);
+  dy = Math.sign(dy);
+
+  if (dx !== 0 && dy !== 0) {
+    // Normalize so diagonal movement is not faster.
+    dx *= Math.SQRT1_2;
+    dy *= Math.SQRT1_2;
+  }
+  return { dx, dy };
+}
+
+// ---- Slide ----
+// Start a slide in the direction the player is moving. Nothing happens, and no
+// cooldown is spent, if the player is standing still or the cooldown is running.
+function startSlide() {
+  if (gameOver || picking) return;
+  if (time < slideReadyAt) return;
+  const dir = inputDirection();
+  if (dir.dx === 0 && dir.dy === 0) return;
+  slide.left = SLIDE_TIME;
+  slide.dx = dir.dx;
+  slide.dy = dir.dy;
+  slideReadyAt = time + stats.slideCooldown;
+  if (hasLegendary('slow')) slowUntil = time + SLOW_TIME; // Time Slow starts with the slide
+}
+
+// Move the player a distance in a direction, in short pieces so walls are never skipped.
+function movePlayerBy(dx, dy, distance) {
+  if (dx === 0 && dy === 0) return;
+  while (distance > 0) {
+    const step = Math.min(distance, MOVE_STEP);
+    movePlayer('x', dx * step);
+    movePlayer('y', dy * step);
+    distance -= step;
+  }
+}
+
+// The cooldown bar under the canvas. It is empty right after a slide and full when ready.
+const slideEl = document.getElementById('slide');
+const slideFillEl = document.getElementById('slide-fill');
+let shownSlidePercent = -1; // what the bar currently shows, so the page is only touched on change
+
+function drawSlideMeter() {
+  const waiting = Math.max(0, slideReadyAt - time);
+  // The cooldown can shrink while a wait is running, when an upgrade is picked,
+  // so the result is kept at 0 or above.
+  const percent = Math.max(0, Math.floor(100 * (1 - waiting / stats.slideCooldown)));
+  if (percent === shownSlidePercent) return;
+  shownSlidePercent = percent;
+  slideFillEl.style.width = percent + '%';
+  slideEl.classList.toggle('ready', percent === 100);
+}
+
+// ---- Aiming ----
+// Aiming works through an invisible aim point that sits near the player.
+//
+// While the mouse is captured (the normal way to play), moving the mouse pushes
+// the aim point around. It is kept within AIM_REACH of the player and it travels
+// with the player. That is what makes the arrow turn at the same speed in every
+// direction: the aim point is never far away, and it never runs into a screen edge.
+//
+// While the mouse is not captured, the aim point simply follows the real pointer,
+// wherever in the tab it is.
+
+// The aim point, as an offset from the middle of the player, in room pixels.
+const aimOffset = { x: 0, y: 0 };
+// The direction the aim arrow points in, as a unit vector. It starts out pointing right.
+const aimDirection = { dx: 1, dy: 0 };
+
+// How strongly captured-mouse movement turns the arrow. 1 is the normal speed.
+// It only matters while the mouse is captured: a free pointer is followed exactly.
+let aimSensitivity = 1;
+
+// Keep a sensitivity value on the allowed steps and inside the allowed range.
+function tidySensitivity(value) {
+  const stepped = Math.round(value / SENSITIVITY_STEP) * SENSITIVITY_STEP;
+  return Math.max(SENSITIVITY_MIN, Math.min(SENSITIVITY_MAX, stepped));
+}
+
+// Read the sensitivity the browser saved on an earlier visit, if there is a usable one.
+function loadSensitivity() {
+  try {
+    const saved = Number(localStorage.getItem(SENSITIVITY_SAVE_KEY));
+    if (Number.isFinite(saved) && saved > 0) aimSensitivity = tidySensitivity(saved);
+  } catch {
+    // Storage is blocked. The setting just starts at 1 each visit.
+  }
+}
+
+// Turn the sensitivity down (-1) or up (+1) by one step, and remember it.
+function changeSensitivity(direction) {
+  aimSensitivity = tidySensitivity(aimSensitivity + direction * SENSITIVITY_STEP);
+  try {
+    localStorage.setItem(SENSITIVITY_SAVE_KEY, String(aimSensitivity));
+  } catch {
+    // Storage is blocked. The setting still holds until the page is closed.
+  }
+}
+
+loadSensitivity();
+
+// The sensitivity bar under the canvas. The page is only touched when the value changes.
+const sensitivityValueEl = document.getElementById('sensitivity-value');
+const sensitivityFillEl = document.getElementById('sensitivity-fill');
+let shownSensitivity = -1;
+
+function drawSensitivity() {
+  if (aimSensitivity === shownSensitivity) return;
+  shownSensitivity = aimSensitivity;
+  sensitivityValueEl.textContent = aimSensitivity + '×';
+  sensitivityFillEl.style.width = Math.round(100 * aimSensitivity / SENSITIVITY_MAX) + '%';
+}
+
+// True while the browser has captured the mouse for the game.
+function pointerLocked() {
+  return document.pointerLockElement === canvas;
+}
+
+// Move the aim point, pulling it back to AIM_REACH if it would go further.
+function setAimOffset(x, y) {
+  const length = Math.hypot(x, y);
+  const shrink = length > AIM_REACH ? AIM_REACH / length : 1;
+  aimOffset.x = x * shrink;
+  aimOffset.y = y * shrink;
+}
+
+// Where a shot starts and which way it goes: from the middle of the player,
+// toward the aim point. This is the direction the aim arrow shows. If the aim
+// point sits right on the middle of the player there is no direction to read,
+// so the arrow keeps pointing the way it last did.
+function aim() {
+  const x = player.x + PLAYER_SIZE / 2;
+  const y = player.y + PLAYER_SIZE / 2;
+  if (!pointerLocked()) setAimOffset(mouse.x - x, mouse.y - y);
+  const length = Math.hypot(aimOffset.x, aimOffset.y);
+  if (length >= 1) {
+    aimDirection.dx = aimOffset.x / length;
+    aimDirection.dy = aimOffset.y / length;
+  }
+  return { x, y, dx: aimDirection.dx, dy: aimDirection.dy };
+}
+
+// ---- Blaster ----
+
+let lastBlasterShot = -Infinity; // game time of the most recent blaster shot
+
+// The blaster is an instant laser: the whole beam appears at once and then fades.
+// A beam is a list of straight stretches, each { x1, y1, x2, y2 }. It has one
+// stretch unless it bounces. The first enemy it reaches stops it, unless an
+// upgrade lets it pass through. A wall stops it, unless an upgrade lets it bounce.
+function fireBlaster() {
+  if (middleInWall()) return; // passing through a wall on a Phase Slide
+  if (time - lastBlasterShot < stats.blasterGap) return;
+  const from = aim();
+  lastBlasterShot = time;
+
+  const segments = [];
+  let { x, y, dx, dy } = from;
+  let bounces = stats.beamBounces; // walls it may still bounce off
+  let pierces = stats.beamPierce;  // enemies it may still pass through
+  let stopped = false;             // true once an enemy has stopped it
+  let firstStrike = null;          // the middle of the first enemy (or boss) it reached
+  let bossStruck = false;          // true once this shot has hurt the boss
+
+  while (!stopped) {
+    const hit = castRay(x, y, dx, dy);
+    let endX = hit.x;
+    let endY = hit.y;
+
+    // Every enemy on this stretch, and the boss if it is on it, nearest first.
+    const reached = [];
+    for (const enemy of enemies) {
+      const at = segmentBoxEntry(x, y, hit.x, hit.y, enemy.x, enemy.y, ENEMY_SIZE);
+      if (at !== null) reached.push({ enemy, at });
+    }
+    if (boss) {
+      const at = segmentBoxEntry(x, y, hit.x, hit.y, boss.x, boss.y, BOSS_SIZE);
+      if (at !== null) reached.push({ enemy: null, at }); // no enemy means this one is the boss
+    }
+    reached.sort((a, b) => a.at - b.at);
+
+    for (const { enemy, at } of reached) {
+      if (!firstStrike) {
+        firstStrike = enemy
+          ? { x: enemy.x + ENEMY_SIZE / 2, y: enemy.y + ENEMY_SIZE / 2 }
+          : { x: boss.x + BOSS_SIZE / 2, y: boss.y + BOSS_SIZE / 2 };
+      }
+      // An enemy dies; the boss loses one health.
+      if (enemy) {
+        destroyEnemy(enemy);
+      } else {
+        bossStruck = true;
+        hitBoss();
+      }
+      if (pierces > 0) {
+        pierces--;
+        continue; // straight through this one
+      }
+      // The beam ends where it met this enemy.
+      endX = x + (hit.x - x) * at;
+      endY = y + (hit.y - y) * at;
+      stopped = true;
+      break;
+    }
+
+    segments.push({ x1: x, y1: y, x2: endX, y2: endY });
+    if (stopped || bounces === 0) break;
+
+    // Bounce: turn back the part of the direction that was heading into the
+    // wall, and carry on from just off the wall's surface.
+    bounces--;
+    if (hit.nx !== 0) dx = -dx; else dy = -dy;
+    x = hit.x + hit.nx * BOUNCE_NUDGE;
+    y = hit.y + hit.ny * BOUNCE_NUDGE;
+  }
+
+  beams.push({ segments, age: 0 });
+
+  // Explosive Rounds: an explosion where the beam ended.
+  if (hasLegendary('explosive')) {
+    const end = segments[segments.length - 1];
+    if (explodeAt(end.x2, end.y2, bossStruck)) bossStruck = true;
+  }
+  // Chain Lightning: arcs from the first enemy the beam reached, if it reached one.
+  if (hasLegendary('chain') && firstStrike) chainLightning(firstStrike.x, firstStrike.y, bossStruck);
+}
+
+function destroyEnemy(enemy) {
+  bursts.push({ x: enemy.x + ENEMY_SIZE / 2, y: enemy.y + ENEMY_SIZE / 2, age: 0 });
+  enemies.splice(enemies.indexOf(enemy), 1);
+  addScore(1);
+  countKill();
+}
+
+// ---- Portal gun ----
+// Which portal a key shoots next. "side" is 'a' for the E key and 'b' for the R key.
+// Normally that is all there is: E shoots 'a' and R shoots 'b'. With the Portal
+// Master legendary, each key takes turns between the first pair and the second.
+function nextPortalFor(side) {
+  return portalTurn[side] === 0 ? side : side + '2';
+}
+
+function firePortalFromKey(side) {
+  if (middleInWall()) return; // passing through a wall on a Phase Slide
+  firePortalGun(nextPortalFor(side));
+  if (hasLegendary('portals')) portalTurn[side] = 1 - portalTurn[side];
+}
+
+// Fire a shot for one portal: 'a', 'b', 'a2', or 'b2'. Walls never move within a room,
+// so the wall face the shot will land on is worked out now and the shot just flies there.
+function firePortalGun(which) {
+  const from = aim();
+  const hit = castRay(from.x, from.y, from.dx, from.dy);
+  portalShots.push({
+    which,
+    x: from.x, y: from.y, dx: from.dx, dy: from.dy,
+    left: hit.dist,
+    face: { col: hit.col, row: hit.row, nx: hit.nx, ny: hit.ny },
+  });
+}
+
+function sameFace(p, q) {
+  return p.col === q.col && p.row === q.row && p.nx === q.nx && p.ny === q.ny;
+}
+
+// Put a portal on a wall face, replacing wherever it was before.
+// Two portals cannot share a face, so any other portal already there is removed.
+function placeGunPortal(which, face) {
+  for (const other in gunPortals) {
+    if (other !== which && gunPortals[other] && sameFace(gunPortals[other], face)) gunPortals[other] = null;
+  }
+  gunPortals[which] = face;
+}
+
+// True when the player is pressed against this portal's wall face, lined up with
+// it, and moving into it. (dx, dy) is the direction the player is moving.
+function enteringGunPortal(p, dx, dy) {
+  if (dx * p.nx + dy * p.ny >= 0) return false; // not moving toward the wall
+
+  const into = p.nx !== 0 ? 'x' : 'y';       // the axis that runs into the wall
+  const along = into === 'x' ? 'y' : 'x';    // the axis that runs along the wall
+  const n = into === 'x' ? p.nx : p.ny;
+  const tileInto = into === 'x' ? p.col : p.row;
+  const tileAlong = along === 'x' ? p.col : p.row;
+
+  // How far the player's leading side is from the wall face.
+  const face = (n < 0 ? tileInto + 1 : tileInto) * TILE;
+  const gap = n < 0 ? face - (player[into] + PLAYER_SIZE) : player[into] - face;
+  // How much of the player lines up with the portal along the wall.
+  const overlap = Math.min(player[along] + PLAYER_SIZE, (tileAlong + 1) * TILE) -
+                  Math.max(player[along], tileAlong * TILE);
+  return Math.abs(gap) < 1 && overlap >= PLAYER_SIZE / 2;
+}
+
+// Move the player so it stands in front of a portal, touching the wall face
+// and centered on it, as if it just stepped out.
+function putPlayerAtGunPortal(p) {
+  const centered = (TILE - PLAYER_SIZE) / 2;
+  player.x = p.col * TILE + (p.nx < 0 ? TILE - PLAYER_SIZE : p.nx > 0 ? 0 : centered);
+  player.y = p.row * TILE + (p.ny < 0 ? TILE - PLAYER_SIZE : p.ny > 0 ? 0 : centered);
+}
+
+// Teleport the player when it walks into a gun portal whose partner also exists.
+// A portal only ever leads to the other portal of its own pair.
+// Two rules stop the player bouncing straight back:
+//   1. a short delay after every teleport, and
+//   2. the portal the player came out of stays off until the player stops pushing into it.
+function updateTeleport(dx, dy) {
+  if (lastExit && !(gunPortals[lastExit] && enteringGunPortal(gunPortals[lastExit], dx, dy))) {
+    lastExit = null;
+  }
+  if (time < teleportReadyAt) return;
+
+  for (const [one, two] of PORTAL_PAIRS) {
+    if (!gunPortals[one] || !gunPortals[two]) continue; // this pair is not complete
+    for (const [from, to] of [[one, two], [two, one]]) {
+      if (from === lastExit) continue;
+      if (!enteringGunPortal(gunPortals[from], dx, dy)) continue;
+      putPlayerAtGunPortal(gunPortals[to]);
+      teleportReadyAt = time + TELEPORT_DELAY;
+      lastExit = to;
+      return;
+    }
+  }
+}
+
+// ---- Mouse ----
+// The real pointer's position in room pixels, used for aiming while the mouse is
+// not captured. It can be outside the room. The mouse only aims and fires; it
+// never moves the player.
+// "leftDown" is true while the left button is held, which keeps the blaster firing.
+const mouse = { x: ROOM_W / 2, y: ROOM_H / 2, leftDown: false };
+
+function trackMouse(e) {
+  const rect = canvas.getBoundingClientRect();
+  // rect includes the border, and the room is shown larger or smaller than its
+  // real size, so skip the border and convert from screen pixels to room pixels.
+  mouse.x = (e.clientX - rect.left - canvas.clientLeft) * (canvas.width / canvas.clientWidth);
+  mouse.y = (e.clientY - rect.top - canvas.clientTop) * (canvas.height / canvas.clientHeight);
+}
+
+// Ask the browser to capture the mouse. It only agrees right after a click or a
+// key press, and it may refuse. If it refuses, aiming follows the real pointer.
+function captureMouse() {
+  if (pointerLocked() || !canvas.requestPointerLock) return;
+  try {
+    const asked = canvas.requestPointerLock();
+    if (asked && asked.catch) asked.catch(() => {});
+  } catch {
+    // Refused. Nothing to do.
+  }
+}
+
+// Give the mouse back, for screens where the player needs a visible pointer.
+function releaseMouse() {
+  if (pointerLocked()) document.exitPointerLock();
+}
+
+// A menu (upgrade cards or game over) gives the mouse back and shows the
+// pointer. Leaving the menu hides the pointer and captures the mouse again.
+function setMenuOpen(open) {
+  document.body.classList.toggle('menu', open);
+  if (open) releaseMouse(); else captureMouse();
+}
+
+// Every mouse listener is on the whole window, so the mouse works the same
+// anywhere in the tab, not only over the room.
+window.addEventListener('mousemove', (e) => {
+  if (pointerLocked()) {
+    // A captured mouse reports how far it moved, in screen pixels. Convert that
+    // to room pixels and push the aim point by it.
+    // The sensitivity setting then makes the same hand movement count for more or less.
+    const shown = canvas.clientWidth / ROOM_W; // how many screen pixels one room pixel takes
+    const perPixel = aimSensitivity / shown;
+    setAimOffset(aimOffset.x + e.movementX * perPixel, aimOffset.y + e.movementY * perPixel);
+  } else {
+    trackMouse(e);
+  }
+});
+
+// When the browser lets go of the mouse (Esc, or a menu opening), remember the
+// pointer as being where the aim point is, so the arrow does not jump.
+document.addEventListener('pointerlockchange', () => {
+  if (pointerLocked()) return;
+  mouse.x = player.x + PLAYER_SIZE / 2 + aimOffset.x;
+  mouse.y = player.y + PLAYER_SIZE / 2 + aimOffset.y;
+});
+
+window.addEventListener('mousedown', (e) => {
+  // The middle and right buttons never do their browser things (scrolling mode, menu).
+  if (e.button !== 0) e.preventDefault();
+  // In a menu the click belongs to the page, so the upgrade cards can be clicked.
+  if (gameOver || picking) return;
+  e.preventDefault(); // no text selection or dragging, wherever the click lands
+  if (!pointerLocked()) {
+    trackMouse(e);    // aim at exactly where the click landed
+    captureMouse();
+  }
+  // The left button is the blaster. The other buttons do nothing.
+  if (e.button === 0) {
+    mouse.leftDown = true;
+    fireBlaster();
+  }
+});
+window.addEventListener('mouseup', (e) => {
+  if (e.button === 0) mouse.leftDown = false;
+});
+
+// Nothing on the page opens the browser menu or starts a drag. Either would
+// take the mouse and keyboard away from the game until the next click.
+window.addEventListener('contextmenu', (e) => e.preventDefault());
+window.addEventListener('dragstart', (e) => e.preventDefault());
+
+// ---- Room size on screen ----
+// How many times its real size the room should be shown, for a window of this
+// size, when the rows above and below the room need this much height.
+// It aims for ROOM_SCALE_MAX. A narrow window shrinks it as far as needed. A
+// short window shrinks it only down to real size; below that the page scrolls.
+function roomScaleFor(windowWidth, windowHeight, otherRowsHeight) {
+  const byWidth = (windowWidth - 32 - 4) / ROOM_W;  // 16 pixels of margin and 2 of border on each side
+  const byHeight = Math.max(1, (windowHeight - otherRowsHeight - 4) / ROOM_H);
+  return Math.max(0.25, Math.min(ROOM_SCALE_MAX, byWidth, byHeight));
+}
+
+// Set the canvas's size on screen. Only its displayed size changes; inside it is
+// still ROOM_W by ROOM_H, so nothing about the game itself is affected.
+const stageEl = document.getElementById('stage');
+
+function fitRoom() {
+  // Height taken by everything that is not the room: the page padding, plus
+  // each other row and the gap beside it.
+  let otherRowsHeight = 24;
+  for (const row of document.body.children) {
+    if (row !== stageEl && row.offsetHeight > 0) otherRowsHeight += row.offsetHeight + 12;
+  }
+  const page = document.documentElement;
+  const scale = roomScaleFor(page.clientWidth, page.clientHeight, otherRowsHeight);
+  canvas.style.width = Math.round(ROOM_W * scale) + 4 + 'px'; // the 4 is the border; the height follows
+}
+window.addEventListener('resize', fitRoom);
+fitRoom();
+
+// ---- Game loop ----
+function update(dt) {
+  // Everything stands still behind the game over screen and the upgrade choice.
+  if (gameOver || picking) return;
+  time += dt;
+  if (runStarted) runSeconds += dt; // the run timer, which also stops for those screens
+
+  // Age the blaster beams and drop the ones that have faded out.
+  for (let i = beams.length - 1; i >= 0; i--) {
+    beams[i].age += dt;
+    if (beams[i].age >= BEAM_FADE) beams.splice(i, 1);
+  }
+
+  // Fly the portal gun shots. A shot that arrives places its portal. They are
+  // handled in the order they were fired, so when two land on the same wall face
+  // in the same moment, the one fired last is the one that stays.
+  for (let i = 0; i < portalShots.length; i++) {
+    const shot = portalShots[i];
+    const step = Math.min(PORTAL_SHOT_SPEED * dt, shot.left);
+    shot.x += shot.dx * step;
+    shot.y += shot.dy * step;
+    shot.left -= step;
+    if (shot.left <= 0) {
+      placeGunPortal(shot.which, shot.face);
+      portalShots.splice(i, 1);
+      i--; // the next shot has moved into this position
+    }
+  }
+
+  // Move the player. While a slide lasts, it overrides the keys with its own
+  // direction and speed. If the slide ends partway through this frame, the rest
+  // of the frame is ordinary walking, so a slide covers the same distance at any frame rate.
+  let { dx, dy } = inputDirection();
+  let walkTime = dt;
+  if (slide.left > 0) {
+    const slideTime = Math.min(dt, slide.left);
+    if (hasLegendary('phase')) {
+      // Phase Slide: walls do not stop the slide. If it ends inside one, the
+      // player is carried on out the other side.
+      phasePlayerBy(slide.dx, slide.dy, SLIDE_SPEED * slideTime);
+    } else {
+      movePlayerBy(slide.dx, slide.dy, SLIDE_SPEED * slideTime);
+    }
+    slide.left -= slideTime;
+    if (slide.left < 1e-9) slide.left = 0; // clear rounding leftovers
+    if (slide.left === 0 && hasLegendary('phase')) leaveWall(slide.dx, slide.dy);
+    walkTime -= slideTime;
+    if (walkTime <= 0) {
+      // The whole frame was sliding, so that is the direction the player moved in.
+      dx = slide.dx;
+      dy = slide.dy;
+    }
+  }
+  if (walkTime > 0) movePlayerBy(dx, dy, stats.playerSpeed * walkTime);
+
+  updateTeleport(dx, dy);
+  collectHealthPack();
+
+  // Holding the left button keeps the blaster firing as fast as it is allowed to.
+  if (mouse.leftDown) fireBlaster();
+
+  // Time Slow: for a short while after a slide, enemies, their shots, and the
+  // boss all run on a slower clock, so they cover half the ground.
+  const enemyDt = time < slowUntil ? dt * SLOW_FACTOR : dt;
+  updateEnemies(enemyDt);
+  updateBoss(enemyDt);
+  updateEnemyShots(enemyDt);
+  if (gameOver) return; // that shot took the last heart
+
+  // Age the short-lived effects and drop the ones that have faded out: rings
+  // from destroyed enemies, lightning arcs, and explosions.
+  for (const [list, lifetime] of [[bursts, BURST_TIME], [arcs, ARC_FADE], [blasts, BLAST_FADE]]) {
+    for (let i = list.length - 1; i >= 0; i--) {
+      list[i].age += dt;
+      if (list[i].age >= lifetime) list.splice(i, 1);
+    }
+  }
+
+  // A locked exit ignores the player. If the player is standing on it when the
+  // last enemy dies, it opens under them and the next room loads straight away.
+  if (exitUnlocked() && touchingExit()) leaveRoom();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, ROOM_W, ROOM_H);
+
+  ctx.fillStyle = COLORS.wall;
+  for (let row = 0; row < ROWS; row++) {
+    for (let col = 0; col < COLS; col++) {
+      if (walls[row][col]) ctx.fillRect(col * TILE, row * TILE, TILE, TILE);
+    }
+  }
+
+  drawExit();
+  drawHealthPack();
+  drawEnemies();
+  drawBoss();
+
+  // Shots and beams go under the player, so they appear to come out of the square.
+  drawPortalShots();
+  drawBeams();
+  drawAim();
+
+  // The player. While invincible after a hit it turns pale red with a red glow
+  // and blinks between solid and faint ten times a second. During a Phase Slide
+  // it is drawn see-through, to show that walls and shots pass through it.
+  const invincible = time < invincibleUntil;
+  const faint = invincible && Math.floor(time * 10) % 2 === 1;
+  ctx.fillStyle = invincible ? COLORS.playerHit : COLORS.player;
+  if (invincible) {
+    ctx.shadowColor = COLORS.enemy;
+    ctx.shadowBlur = 16;
+  }
+  ctx.globalAlpha = faint ? 0.3 : phasing() ? 0.5 : 1;
+  ctx.fillRect(Math.round(player.x), Math.round(player.y), PLAYER_SIZE, PLAYER_SIZE);
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur = 0;
+
+  drawGunPortals(); // over the player, so a portal stays visible while the player stands at it
+  drawEnemyShots(); // on top, so a shot is never hidden when it matters
+  drawBursts();
+  drawBlasts();
+  drawArcs();
+  if (time < slowUntil) {
+    // Time Slow is running: a faint blue wash over the whole room.
+    ctx.fillStyle = COLORS.slowTint;
+    ctx.fillRect(0, 0, ROOM_W, ROOM_H);
+  }
+  drawBossBar();
+
+  drawSlideMeter();
+  drawEnemyCounter();
+  drawHearts();
+  drawUpgradeIcons();
+  drawPortalHints();
+  drawSensitivity();
+  drawRunInfo();
+}
+
+// The room number and the run timer, in the row above the canvas. The page is
+// only touched when the text changes, which for the timer is once a second.
+const roomNumberEl = document.getElementById('room-number');
+const runTimeEl = document.getElementById('run-time');
+let shownRunInfo = '';
+
+// Seconds as minutes and seconds, such as 1:07.
+function formatTime(seconds) {
+  const whole = Math.floor(seconds);
+  const rest = whole % 60;
+  return Math.floor(whole / 60) + ':' + (rest < 10 ? '0' : '') + rest;
+}
+
+function drawRunInfo() {
+  const roomText = 'Room ' + room;
+  const timeText = formatTime(runSeconds);
+  if (roomText + timeText === shownRunInfo) return;
+  shownRunInfo = roomText + timeText;
+  roomNumberEl.textContent = roomText;
+  runTimeEl.textContent = timeText;
+}
+
+// Explosive Rounds: each explosion is a filled circle that grows a little and fades.
+function drawBlasts() {
+  ctx.fillStyle = COLORS.blast;
+  ctx.shadowColor = COLORS.blast;
+  ctx.shadowBlur = 18;
+  for (const blast of blasts) {
+    const progress = blast.age / BLAST_FADE; // 0 when it starts, 1 when it is gone
+    ctx.globalAlpha = 0.7 * (1 - progress);
+    ctx.beginPath();
+    ctx.arc(blast.x, blast.y, BLAST_RADIUS * (0.6 + 0.4 * progress), 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur = 0;
+}
+
+// Chain Lightning: each arc is a jagged line through the points worked out when it struck.
+function drawArcs() {
+  ctx.strokeStyle = COLORS.arc;
+  ctx.shadowColor = COLORS.arc;
+  ctx.shadowBlur = 12;
+  ctx.lineWidth = 2.5;
+  ctx.lineJoin = 'round';
+  for (const arc of arcs) {
+    ctx.globalAlpha = 1 - arc.age / ARC_FADE;
+    ctx.beginPath();
+    ctx.moveTo(arc.points[0].x, arc.points[0].y);
+    for (let i = 1; i < arc.points.length; i++) ctx.lineTo(arc.points[i].x, arc.points[i].y);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur = 0;
+  ctx.lineJoin = 'miter';
+}
+
+// The row of hearts above the canvas: red for hearts left, dim for hearts lost.
+// The page is only touched when the numbers change.
+const HEART = '♥︎'; // a heart drawn as plain text, so it takes the color it is given
+const heartsEl = document.getElementById('hearts');
+const heartsFullEl = document.getElementById('hearts-full');
+const heartsHalfEl = document.getElementById('hearts-half');
+const heartsEmptyEl = document.getElementById('hearts-empty');
+let shownHearts = '';
+
+function drawHearts() {
+  const left = Math.max(0, hearts);
+  const key = left + '/' + maxHearts;
+  if (key === shownHearts) return;
+  shownHearts = key;
+  const full = Math.floor(left);
+  const half = left - full >= 0.5 ? 1 : 0; // one half heart when the count ends in .5
+  heartsFullEl.textContent = HEART.repeat(full);
+  heartsHalfEl.textContent = HEART.repeat(half);
+  heartsEmptyEl.textContent = HEART.repeat(maxHearts - full - half);
+  heartsEl.title = left + ' of ' + maxHearts + ' hearts';
+}
+
+// The health pack is a pale box with a red cross. It is drawn faint while the
+// player has full hearts, to show it cannot be picked up yet.
+function drawHealthPack() {
+  if (!healthPack) return;
+  const cx = (healthPack.col + 0.5) * TILE;
+  const cy = (healthPack.row + 0.5) * TILE;
+  const half = HEALTH_PACK_SIZE / 2;
+
+  ctx.globalAlpha = hearts >= maxHearts ? 0.4 : 1;
+  ctx.fillStyle = COLORS.healthPack;
+  ctx.shadowColor = COLORS.healthPack;
+  ctx.shadowBlur = 10;
+  ctx.fillRect(cx - half, cy - half, HEALTH_PACK_SIZE, HEALTH_PACK_SIZE);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = COLORS.healthCross;
+  ctx.fillRect(cx - 2, cy - 5, 4, 10);
+  ctx.fillRect(cx - 5, cy - 2, 10, 4);
+  ctx.globalAlpha = 1;
+}
+
+// The "Enemies left" readout above the canvas. Like the slide bar, the page is
+// only touched when the number changes.
+const enemiesLeftEl = document.getElementById('enemies-left');
+let shownEnemiesLeft = ''; // the text currently shown; empty until the first draw
+
+function drawEnemyCounter() {
+  // While a boss is alive the readout says so instead of counting.
+  const text = boss ? 'Boss fight' : 'Enemies left: ' + enemies.length;
+  if (text === shownEnemiesLeft) return;
+  shownEnemiesLeft = text;
+  enemiesLeftEl.textContent = text;
+  enemiesLeftEl.classList.toggle('clear', !boss && enemies.length === 0);
+}
+
+// The boss: a large red square with a dark middle and a bright heart. It turns
+// orange below half health, and flashes pale before a charge and when a beam hits it.
+function drawBoss() {
+  if (!boss) return;
+  const x = Math.round(boss.x);
+  const y = Math.round(boss.y);
+  const warning = boss.state === 'warn';
+  const body = bossEnraged() ? COLORS.bossRage : COLORS.boss;
+  // The warning blinks about six times a second. A hit shows as one short flash.
+  const pale = time < boss.hitUntil || (warning && Math.floor(time * 12) % 2 === 0);
+
+  if (warning) {
+    // A faint line shows where the charge will go.
+    const cx = boss.x + BOSS_SIZE / 2;
+    const cy = boss.y + BOSS_SIZE / 2;
+    ctx.strokeStyle = COLORS.bossWarn;
+    ctx.globalAlpha = 0.35;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + boss.dx * BOSS_CHARGE_DISTANCE, cy + boss.dy * BOSS_CHARGE_DISTANCE);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  ctx.fillStyle = pale ? COLORS.bossWarn : body;
+  ctx.shadowColor = body;
+  ctx.shadowBlur = warning ? 28 : 16;
+  ctx.fillRect(x, y, BOSS_SIZE, BOSS_SIZE);
+  ctx.shadowBlur = 0;
+
+  const coreInset = 14;
+  ctx.fillStyle = COLORS.bossCore;
+  ctx.fillRect(x + coreInset, y + coreInset, BOSS_SIZE - 2 * coreInset, BOSS_SIZE - 2 * coreInset);
+  const heartInset = 26;
+  ctx.fillStyle = body;
+  ctx.fillRect(x + heartInset, y + heartInset, BOSS_SIZE - 2 * heartInset, BOSS_SIZE - 2 * heartInset);
+}
+
+// The boss's health bar, across the top of the room, with a mark at half health.
+function drawBossBar() {
+  if (!boss) return;
+  // It is kept thin and tight against the top edge, so it hides as little as
+  // possible of anything that sits in the top row of the room.
+  const x = 60;
+  const y = 3;
+  const width = ROOM_W - 2 * x;
+  const height = 6;
+  const color = bossEnraged() ? COLORS.bossRage : COLORS.boss;
+
+  ctx.fillStyle = 'rgba(10, 11, 15, 0.8)';
+  ctx.fillRect(x - 1, y - 1, width + 2, height + 2);
+  ctx.fillStyle = color;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 6;
+  ctx.fillRect(x, y, width * boss.health / boss.maxHealth, height);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'rgba(230, 232, 240, 0.7)';
+  ctx.fillRect(x + width / 2 - 1, y - 1, 2, height + 2);
+}
+
+// The exit portal. Locked, it is a still red plate with a padlock on it.
+// Unlocked, it is a green disc with spiral arms that keep turning.
+function drawExit() {
+  const cx = (exitPortal.col + 0.5) * TILE;
+  const cy = (exitPortal.row + 0.5) * TILE;
+
+  if (!exitUnlocked()) {
+    const size = TILE - 2 * EXIT_INSET;
+    const x = cx - size / 2;
+    const y = cy - size / 2;
+    ctx.fillStyle = COLORS.exitLockedDark;
+    ctx.shadowColor = COLORS.exitLocked;
+    ctx.shadowBlur = 12;
+    ctx.fillRect(x, y, size, size);
+    ctx.shadowBlur = 0;
+
+    ctx.strokeStyle = COLORS.exitLocked;
+    ctx.fillStyle = COLORS.exitLocked;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x + 1, y + 1, size - 2, size - 2);
+    // Padlock: a half loop on top of a solid body.
+    ctx.beginPath();
+    ctx.arc(cx, cy - 2, 4, Math.PI, 0);
+    ctx.stroke();
+    ctx.fillRect(cx - 6, cy - 2, 12, 9);
+    return;
+  }
+
+  const radius = TILE / 2 - 2;
+  ctx.fillStyle = COLORS.exitOpenDark;
+  ctx.shadowColor = COLORS.exitOpen;
+  ctx.shadowBlur = 14 + 6 * Math.sin(time * 4); // the glow breathes in and out
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // Each arm starts in the middle and bends as it goes outward, which makes the
+  // spiral. Adding the game time to every angle makes the whole thing turn.
+  const arms = 3;
+  const points = 12;  // straight pieces per arm
+  const bend = 0.32;  // radians of bend per pixel away from the middle
+  const turn = time * 3;
+  ctx.strokeStyle = COLORS.exitOpen;
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  for (let arm = 0; arm < arms; arm++) {
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    for (let i = 1; i <= points; i++) {
+      const distance = radius * i / points;
+      const angle = turn + arm * (Math.PI * 2 / arms) + distance * bend;
+      ctx.lineTo(cx + Math.cos(angle) * distance, cy + Math.sin(angle) * distance);
+    }
+    ctx.stroke();
+  }
+  ctx.lineCap = 'butt';
+
+  // A bright rim around the disc.
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+// An enemy is a glowing red square with a dark middle.
+function drawEnemies() {
+  const coreInset = 7;
+  for (const enemy of enemies) {
+    const x = Math.round(enemy.x);
+    const y = Math.round(enemy.y);
+    ctx.fillStyle = COLORS.enemy;
+    ctx.shadowColor = COLORS.enemy;
+    ctx.shadowBlur = 10;
+    ctx.fillRect(x, y, ENEMY_SIZE, ENEMY_SIZE);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = COLORS.enemyCore;
+    ctx.fillRect(x + coreInset, y + coreInset, ENEMY_SIZE - 2 * coreInset, ENEMY_SIZE - 2 * coreInset);
+  }
+}
+
+function drawEnemyShots() {
+  ctx.fillStyle = COLORS.enemyShot;
+  ctx.shadowColor = COLORS.enemyShot;
+  ctx.shadowBlur = 10;
+  for (const shot of enemyShots) {
+    ctx.beginPath();
+    ctx.arc(shot.x, shot.y, ENEMY_SHOT_RADIUS, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.shadowBlur = 0;
+}
+
+// A destroyed enemy leaves a ring that grows and fades.
+function drawBursts() {
+  ctx.strokeStyle = COLORS.enemy;
+  ctx.shadowColor = COLORS.enemy;
+  ctx.shadowBlur = 12;
+  for (const burst of bursts) {
+    const progress = burst.age / BURST_TIME; // 0 when it starts, 1 when it is gone
+    ctx.globalAlpha = 1 - progress;
+    ctx.lineWidth = 4 * (1 - progress) + 1;
+    ctx.beginPath();
+    // "size" is set for the boss, whose ring is larger. Ordinary enemies leave it out.
+    const size = burst.size || ENEMY_SIZE;
+    ctx.arc(burst.x, burst.y, size / 2 + size * 0.8 * progress, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur = 0;
+}
+
+function gunPortalColor(which) {
+  return { a: COLORS.portalA, b: COLORS.portalB, a2: COLORS.portalA2, b2: COLORS.portalB2 }[which];
+}
+
+// The two portal key hints under the canvas, one for E and one for R. Each
+// names the portal its key will shoot next, in that portal's color, and lights
+// up while that portal exists. The page is only touched when something changes.
+const portalHintEls = { a: document.getElementById('slot-a'), b: document.getElementById('slot-b') };
+let shownPortals = '';
+
+function drawPortalHints() {
+  const next = { a: nextPortalFor('a'), b: nextPortalFor('b') };
+  const key = next.a + (gunPortals[next.a] ? '+' : '-') + next.b + (gunPortals[next.b] ? '+' : '-');
+  if (key === shownPortals) return;
+  shownPortals = key;
+  for (const side of ['a', 'b']) {
+    const hint = portalHintEls[side];
+    hint.style.setProperty('--slot-color', gunPortalColor(next[side]));
+    hint.classList.toggle('placed', gunPortals[next[side]] !== null);
+    hint.lastChild.textContent = PORTAL_NAMES[next[side]] + ' portal'; // the text after the key letter
+  }
+}
+
+// A gun portal is a glowing bar lying against its wall face, on the open side,
+// with a pale line down the middle.
+function drawGunPortals() {
+  const length = TILE - 4; // along the wall
+  const depth = 6;         // out from the wall
+  for (const which in gunPortals) {
+    const p = gunPortals[which];
+    if (!p) continue;
+    const sideways = p.nx !== 0; // true when the face is a left or right side
+    // Middle of the wall face.
+    const faceX = (p.col + 0.5 - p.nx / 2) * TILE;
+    const faceY = (p.row + 0.5 - p.ny / 2) * TILE;
+    const w = sideways ? depth : length;
+    const h = sideways ? length : depth;
+    // Shift half the depth away from the wall so the whole bar sits on the open side.
+    const x = faceX - w / 2 + p.nx * depth / 2;
+    const y = faceY - h / 2 + p.ny * depth / 2;
+
+    const color = gunPortalColor(which);
+    ctx.fillStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 14;
+    ctx.fillRect(x, y, w, h);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+    ctx.fillRect(sideways ? x + 2 : x + 4, sideways ? y + 4 : y + 2, sideways ? 2 : w - 8, sideways ? h - 8 : 2);
+  }
+}
+
+// A portal shot is a small glowing dot with a short tail behind it.
+function drawPortalShots() {
+  const tail = 12;
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 3;
+  for (const shot of portalShots) {
+    const color = gunPortalColor(shot.which);
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 12;
+    ctx.beginPath();
+    ctx.moveTo(shot.x - shot.dx * tail, shot.y - shot.dy * tail);
+    ctx.lineTo(shot.x, shot.y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(shot.x, shot.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.shadowBlur = 0;
+  ctx.lineCap = 'butt';
+}
+
+// Each beam is a wide glowing line with a thin near-white core and a flash where
+// it ends. All three shrink and fade together, which leaves a short trail.
+function drawBeams() {
+  const color = COLORS.blaster;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const beam of beams) {
+    const strength = 1 - beam.age / BEAM_FADE; // 1 when fired, 0 when gone
+    ctx.globalAlpha = strength;
+
+    // One path through every stretch of the beam.
+    ctx.beginPath();
+    for (const part of beam.segments) {
+      ctx.moveTo(part.x1, part.y1);
+      ctx.lineTo(part.x2, part.y2);
+    }
+
+    ctx.strokeStyle = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 16;
+    ctx.lineWidth = 2 + 5 * strength;
+    ctx.stroke();
+
+    ctx.strokeStyle = COLORS.beamCore;
+    ctx.shadowBlur = 0;
+    ctx.lineWidth = 1 + 1.5 * strength;
+    ctx.stroke(); // same path again, drawn as the core
+
+    const end = beam.segments[beam.segments.length - 1];
+    ctx.fillStyle = COLORS.beamCore;
+    ctx.shadowBlur = 20;
+    ctx.beginPath();
+    ctx.arc(end.x2, end.y2, 2 + 5 * strength, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur = 0;
+  ctx.lineCap = 'butt';
+  ctx.lineJoin = 'miter';
+}
+
+// The aim display, drawn around the player:
+//   a thin ring,
+//   an arrowhead on the ring pointing where shots will go, and
+//   a faint dotted line from the arrow to the first wall in that direction,
+//     which is where a portal shot would land.
+function drawAim() {
+  const from = aim();
+  const tip = AIM_RING_RADIUS + AIM_ARROW_SIZE; // distance from the player's middle to the arrow's point
+
+  // Dotted guide line, from the arrow's point to the wall. It is left out while
+  // the player is passing through a wall, when no shot can be fired anyway.
+  const hit = middleInWall() ? null : castRay(from.x, from.y, from.dx, from.dy);
+  if (hit && hit.dist > tip) {
+    ctx.strokeStyle = COLORS.aimGuide;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([2, 6]);
+    ctx.beginPath();
+    ctx.moveTo(from.x + from.dx * tip, from.y + from.dy * tip);
+    ctx.lineTo(hit.x, hit.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // Ring.
+  ctx.strokeStyle = COLORS.aimRing;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(from.x, from.y, AIM_RING_RADIUS, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Arrowhead: a triangle with its base on the ring and its point further out.
+  // (sideX, sideY) is the aim direction turned a quarter turn, used for the base.
+  const sideX = -from.dy;
+  const sideY = from.dx;
+  const baseX = from.x + from.dx * (AIM_RING_RADIUS - 1);
+  const baseY = from.y + from.dy * (AIM_RING_RADIUS - 1);
+  const halfBase = AIM_ARROW_SIZE * 0.6;
+  ctx.fillStyle = COLORS.blaster;
+  ctx.shadowColor = COLORS.blaster;
+  ctx.shadowBlur = 8;
+  ctx.beginPath();
+  ctx.moveTo(from.x + from.dx * tip, from.y + from.dy * tip);
+  ctx.lineTo(baseX + sideX * halfBase, baseY + sideY * halfBase);
+  ctx.lineTo(baseX - sideX * halfBase, baseY - sideY * halfBase);
+  ctx.closePath();
+  ctx.fill();
+  ctx.shadowBlur = 0;
+}
+
+let lastTime = null;
+function frame(now) {
+  const dt = lastTime === null ? 0 : Math.min((now - lastTime) / 1000, MAX_DT);
+  lastTime = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
